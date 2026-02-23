@@ -1,7 +1,10 @@
 // YES! YOU CAN ACTUALLY USE THIS TO IMPL A INLINE HOOK!
-#include <Windows.h>
+
 #include <cppbm/decorator.h>
 
+#ifdef _WIN32
+
+#include <Windows.h>
 
 class MessageBoxAHooker : public cpp::blackmagic::AutoDecorator<MessageBoxA>
 {
@@ -15,3 +18,5 @@ public:
 		return CallOriginal(hwnd, "DECORATOR HIJACKED THE FUNCTION!", caption, type | MB_ICONINFORMATION);
 	}
 };
+
+#endif // _WIN32

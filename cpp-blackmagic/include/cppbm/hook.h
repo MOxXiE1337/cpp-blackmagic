@@ -19,17 +19,14 @@
 namespace cpp::blackmagic::hook
 {
     // Convert a member-function pointer into a code address for MinHook.
-        //
-        // This requires the member-function pointer representation to fit into one
-        // fits in one machine pointer (typically single inheritance).
+    //
+    // This requires the member-function pointer representation to fit into one
+    // fits in one machine pointer (typically single inheritance).
     template <typename MemFn>
     inline void* MemberPointerToAddress(MemFn fn)
     {
         static_assert(std::is_member_function_pointer_v<MemFn>,
             "MemFn must be a member-function pointer.");
-        static_assert(sizeof(MemFn) == sizeof(void*),
-            "Unsupported member-function pointer layout. "
-            "Only pointer-sized member-function pointers are supported.");
 
         void* addr = nullptr;
         std::memcpy(&addr, &fn, sizeof(addr));

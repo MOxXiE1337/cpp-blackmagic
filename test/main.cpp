@@ -30,9 +30,13 @@ int main()
 
 	// Inline hook test
 	// If you use AutoDecorator, you don't need to pass in the func address
+
+	// Windows test
+#ifdef _WIN32
 	MessageBoxAHooker hooker{};
 
 	MessageBoxA(NULL, "HELLO WORLD!", "TESTA", MB_OK);
+#endif // _WIN32
 
 	return 0;
 }

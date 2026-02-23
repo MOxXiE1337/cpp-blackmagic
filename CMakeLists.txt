@@ -11,8 +11,18 @@ endif()
 
 project ("cpp-blackmagic")
 
-option(BUILD_WIN32 "Build Win32 (x86) variant." ON)
+option(BUILD_WIN32 "Build Win32 (x86) variant." OFF)
 option(BUILD_WIN64 "Build Win64 (x64) variant." ON)
+
+option(BUILD_LINUX_X86 "Build Linux (x86) variant." OFF)
+option(BUILD_LINUX_X86_64 "Build Linux (x86_64) variant." OFF)
+option(BUILD_LINUX_ARM "Build Linux (arm32) variant." OFF)
+option(BUILD_LINUX_ARM64 "Build Linux (arm64) variant." OFF)
+
+option(BUILD_ANDROID_X86 "Build Android (x86) variant." OFF)
+option(BUILD_ANDROID_X86_64 "Build Android (x86_64) variant." OFF)
+option(BUILD_ANDROID_ARM "Build Android (arm32) variant." OFF)
+option(BUILD_ANDROID_ARM64 "Build Android (arm64) variant." OFF)
 
 add_subdirectory(cpp-blackmagic)
 add_subdirectory(test)

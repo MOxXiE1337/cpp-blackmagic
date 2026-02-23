@@ -16,9 +16,10 @@ add_custom_command(
 import re
 import argparse
 from pathlib import Path
+import sys
 
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
@@ -40,9 +41,78 @@ DECORATOR_RE = re.compile(
     re.VERBOSE,
 )
 
+def build_cpp_language():
+    candidates = []
+    if hasattr(tscpp, "language"):
+        try:
+            candidates.append(tscpp.language())
+        except Exception:
+            pass
+    if hasattr(tscpp, "LANGUAGE"):
+        candidates.append(tscpp.LANGUAGE)
+
+    for candidate in candidates:
+        # New API style
+        try:
+            return Language(candidate)
+        except Exception:
+            pass
+        # Old API style
+        try:
+            return Language(candidate, "cpp")
+        except Exception:
+            pass
+        if isinstance(candidate, (str, bytes, Path)):
+            try:
+                return Language(str(candidate), "cpp")
+            except Exception:
+                pass
+
+    # Optional fallback package
+    try:
+        from tree_sitter_languages import get_language
+        return get_language("cpp")
+    except Exception:
+        return None
+
+
+def build_cpp_parser(language):
+    if language is None:
+        return None
+
+    # Try constructor styles across tree_sitter versions.
+    try:
+        parser = Parser(language)
+    except Exception:
+        parser = Parser()
+
+    # Force language binding for old/new APIs.
+    try:
+        if hasattr(parser, "set_language"):
+            parser.set_language(language)
+        elif hasattr(parser, "language"):
+            parser.language = language
+    except Exception:
+        return None
+
+    # Probe parse to ensure parser is actually usable.
+    try:
+        parser.parse(b"int __cppbm_probe__() { return 0; }")
+    except Exception:
+        return None
+
+    return parser
+
+
 # language to parse cpp
-CPP_LANGUAGE = Language(tscpp.language())
-cpp_parser = Parser(CPP_LANGUAGE)  
+CPP_LANGUAGE = build_cpp_language()
+cpp_parser = build_cpp_parser(CPP_LANGUAGE)
+
+if cpp_parser is None:
+    print(
+        "warning: tree_sitter C++ parser unavailable, fallback to regex function scan.",
+        file=sys.stderr,
+    )
 
 # info of decorator
 @dataclass
@@ -67,7 +137,7 @@ def find_decorators(text: str):
     return out
 
 # replace decorator to white blanks
-def mask_ranges_keep_layout(text: str, ranges: List[tuple[int, int]]) -> str:
+def mask_ranges_keep_layout(text: str, ranges: List[Tuple[int, int]]) -> str:
     buf = list(text)
     for s, e in ranges:
         for i in range(s, e):
@@ -129,8 +199,43 @@ def get_function_info(func_node, code):
     return function_info
 
 # parse source file, and find functions
-def extract_all_cpp_functions(text : str):
-    tree = cpp_parser.parse(text)
+def extract_all_cpp_functions_regex(text: bytes):
+    src = text.decode("utf-8", errors="ignore")
+    functions = []
+    # Rough fallback parser for function definitions.
+    pattern = re.compile(
+        r"(?P<name>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?(?:->\s*[^{};]+)?\s*\{"
+    )
+    blacklist = {"if", "for", "while", "switch", "catch"}
+    for m in pattern.finditer(src):
+        fullname = m.group("name")
+        short_name = fullname.split("::")[-1]
+        if short_name in blacklist:
+            continue
+        functions.append(
+            {
+                "name": short_name,
+                "fullname": fullname,
+                "start": m.start(),
+                "end": m.end(),
+            }
+        )
+    return functions
+
+
+def extract_all_cpp_functions(text : bytes):
+    if cpp_parser is None:
+        return extract_all_cpp_functions_regex(text)
+
+    try:
+        tree = cpp_parser.parse(text)
+    except Exception as e:
+        print(
+            "warning: tree_sitter parse failed ({0}), fallback to regex function scan.".format(e),
+            file=sys.stderr,
+        )
+        return extract_all_cpp_functions_regex(text)
+
     root_node = tree.root_node
     
     functions = []
@@ -180,6 +285,10 @@ def main():
     
     for dec in decorators:
         func = find_nearest_funcion(dec.end)
+        if func is None:
+            raise RuntimeError(
+                f"Cannot find target function for decorator @{dec.name} near byte {dec.end} in {src}"
+            )
         
         # create decorator
         
@@ -188,8 +297,9 @@ def main():
             
         dec_type = dec.ns + "_Decorator_" + dec.name + "_"
         var_name = func["name"] + "_dec_" + str(func["start"])
-        sentence = f"inline {dec_type}<&{func["fullname"]}> {var_name}" + "{};"
-        print(f"generate ({dec.ns}@{dec.name} => {func["fullname"]}) | " + sentence)
+        func_fullname = func["fullname"]
+        sentence = f'inline {dec_type}<&{func_fullname}> {var_name}{{}};'
+        print(f'generate ({dec.ns}@{dec.name} => {func_fullname}) | ' + sentence)
         masked += sentence + "\n"
     
     
