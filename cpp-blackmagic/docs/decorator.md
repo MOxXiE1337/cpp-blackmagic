@@ -198,53 +198,49 @@ int add(int a, int b)
 #include <cppbm/decorator.h>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
-template <auto Target>
-class RouteDecorator;
-
-template <typename R, typename... Args, R(*Target)(Args...)>
-class RouteDecorator<Target> : public cpp::blackmagic::FunctionDecorator<Target>
-{
+class Router {
 public:
-    RouteDecorator(std::string method, std::string path)
-        : method_(std::move(method)), path_(std::move(path)) {}
+    class RouteBinder {
+    public:
+        RouteBinder(Router* router, std::string method, std::string path)
+            : router_(router), method_(std::move(method)), path_(std::move(path)) {}
 
-    bool BeforeCall(Args...) override
+        template <auto Target>
+        bool bind() const
+        {
+            // registration-style class decorator: side effect + status return
+            return router_->register_route(method_, path_, target_key<Target>());
+        }
+
+    private:
+        template <auto Target>
+        static const void* target_key()
+        {
+            static int token = 0;
+            return &token;
+        }
+
+        Router* router_;
+        std::string method_;
+        std::string path_;
+    };
+
+    RouteBinder get(const char* path)
     {
-        std::printf("[route] %s %s\n", method_.c_str(), path_.c_str());
-        return true;
+        return RouteBinder{ this, "GET", path };
+    }
+
+    bool register_route(const std::string& method, const std::string& path, const void* handler_key)
+    {
+        const std::string key = method + " " + path;
+        return routes_.emplace(key, handler_key).second;
     }
 
 private:
-    std::string method_;
-    std::string path_;
-};
-
-class RouteBinder
-{
-public:
-    RouteBinder(std::string method, std::string path)
-        : method_(std::move(method)), path_(std::move(path)) {}
-
-    template <auto Target>
-    auto bind() const
-    {
-        return RouteDecorator<Target>{ method_, path_ };
-    }
-
-private:
-    std::string method_;
-    std::string path_;
-};
-
-class Router
-{
-public:
-    RouteBinder get(const char* path) const
-    {
-        return RouteBinder{ "GET", path };
-    }
+    std::unordered_map<std::string, const void*> routes_{};
 };
 
 inline Router router{};
