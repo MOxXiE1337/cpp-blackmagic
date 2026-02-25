@@ -5,6 +5,7 @@ This document explains how `cpp-blackmagic/include/cppbm/decorator.h` works, wha
 
 `decorator.h` provides:
 - decorator marker syntax (`decorator(@name)`)
+- class decorator syntax (`decorator(@router.get("/path"))`)
 - decorator class naming helper (`decorator_class(name)`)
 - function/member-function hook wrappers (`FunctionDecorator<Target>`)
 - integration with hook runtime (`internal/hook/hook.h`)
@@ -45,7 +46,7 @@ The macro in `decorator.h` is intentionally a no-op:
 
 Binding is done by the Python preprocessor, not by the C++ preprocessor.
 
-### 2) Decorator Class Naming Convention
+### 2) Decorator Class Naming Convention (Symbol Form)
 `decorator_class(name)` expands to `_Decorator_<name>_`.
 
 Example:
@@ -64,7 +65,37 @@ class _Decorator_logger_;
 
 The preprocess output instantiates this class and binds it to target functions.
 
-### 3) FunctionDecorator<Target>
+### 3) Class Decorator (RouteBinder Form)
+Besides `decorator(@name)`, you can use class decorator syntax:
+
+```cpp
+decorator(@router.get("/health"))
+int health();
+```
+
+For this form, preprocess generates:
+
+```cpp
+inline auto __cppbm_health_dec_xx = (router.get("/health")).bind<&health>();
+```
+
+So the expression result must expose:
+
+```cpp
+template <auto Target>
+auto bind() const;
+```
+
+`bind<&Target>()` can return any type that makes this generated statement valid.
+The framework does not enforce a specific return type.
+
+Common patterns:
+- Return a decorator object (for hook-style behavior, often based on `FunctionDecorator<Target>`).
+- Return a status value such as `bool` (for registration-style side effects, e.g. router tables).
+
+The key requirement is that `bind<&Target>()` itself performs or triggers the behavior you expect.
+
+### 4) FunctionDecorator<Target>
 `FunctionDecorator<Target>` is the runtime base class that installs hooks.
 
 - Constructor installs hook immediately.
@@ -158,6 +189,70 @@ decorator(@logger)
 int add(int a, int b)
 {
     return a + b;
+}
+```
+
+## Class Decorator Example (Router + RouteBinder)
+
+```cpp
+#include <cppbm/decorator.h>
+#include <cstdio>
+#include <string>
+#include <utility>
+
+template <auto Target>
+class RouteDecorator;
+
+template <typename R, typename... Args, R(*Target)(Args...)>
+class RouteDecorator<Target> : public cpp::blackmagic::FunctionDecorator<Target>
+{
+public:
+    RouteDecorator(std::string method, std::string path)
+        : method_(std::move(method)), path_(std::move(path)) {}
+
+    bool BeforeCall(Args...) override
+    {
+        std::printf("[route] %s %s\n", method_.c_str(), path_.c_str());
+        return true;
+    }
+
+private:
+    std::string method_;
+    std::string path_;
+};
+
+class RouteBinder
+{
+public:
+    RouteBinder(std::string method, std::string path)
+        : method_(std::move(method)), path_(std::move(path)) {}
+
+    template <auto Target>
+    auto bind() const
+    {
+        return RouteDecorator<Target>{ method_, path_ };
+    }
+
+private:
+    std::string method_;
+    std::string path_;
+};
+
+class Router
+{
+public:
+    RouteBinder get(const char* path) const
+    {
+        return RouteBinder{ "GET", path };
+    }
+};
+
+inline Router router{};
+
+decorator(@router.get("/health"))
+int health()
+{
+    return 200;
 }
 ```
 

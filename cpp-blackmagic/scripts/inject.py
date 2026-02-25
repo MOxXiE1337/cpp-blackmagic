@@ -23,6 +23,8 @@ from decorator import (
     extract_all_cpp_functions,
     extract_all_cpp_functions_and_declarations,
     set_strict_parser,
+    read_text_auto,
+    write_text_auto,
 )
 
 GENERATED_INJECT_BIND_RE = re.compile(
@@ -98,7 +100,7 @@ def main():
     src = Path(args.inp)
     dst = Path(args.out)
 
-    text = src.read_text(encoding="utf-8")
+    text, source_codec, source_bom = read_text_auto(src)
     base_text = strip_generated_inject_metadata(text)
     decorators = find_decorators(base_text)
 
@@ -190,8 +192,7 @@ def main():
         for reg_sentence in default_arg_registry_sentences:
             out_text += reg_sentence + "\n"
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(out_text, encoding="utf-8")
+    write_text_auto(dst, out_text, source_codec, source_bom)
 
 
 if __name__ == "__main__":

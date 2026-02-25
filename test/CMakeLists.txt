@@ -10,11 +10,7 @@ include("${CPPBM_PREPROCESS_CMAKE}")
 
 add_executable(cpp-blackmagic-test 
     src/test.h  
-    #src/inlinehook.h
     src/main.cpp
-
-    #src/router/router.h
-    #src/router/login.cpp
     )
 
 # Enable custom syntax:

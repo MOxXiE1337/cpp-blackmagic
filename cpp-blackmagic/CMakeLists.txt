@@ -24,7 +24,6 @@ add_library(cpp-blackmagic STATIC
     include/cppbm/depends.h
     )
 
-
 target_include_directories(cpp-blackmagic
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

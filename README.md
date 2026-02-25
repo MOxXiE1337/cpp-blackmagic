@@ -6,7 +6,8 @@
 - lightweight dependency injection
 
 Main capabilities:
-- `decorator(@xxx)` style source markers
+- symbol decorator: `decorator(@logger)`
+- class decorator: `decorator(@router.get("/health"))`
 - hook backends via MinHook (Windows) and Dobby (Linux/Android)
 - `@inject + Depends(...)` parameter injection flow
 
@@ -85,6 +86,87 @@ This option is defined in `cpp-blackmagic/scripts/cmake/preprocess.cmake`.
 - `decorator(@inject)` with `Depends(...)`
 - `ScopeOverrideDependency<&target>(...)` scoped override
 
+## Class Decorator Example (Router + RouteBinder)
+`decorator.py` supports class decorator syntax like:
+
+```cpp
+decorator(@router.get("/health"))
+int health();
+```
+
+The preprocessor turns it into a binding call like:
+
+```cpp
+inline auto __cppbm_health_dec_xx = (router.get("/health")).bind<&health>();
+```
+
+`bind<&Target>()` does not have to return a decorator object.
+It can return `bool` (or any other type) as long as the expression is valid and your desired side effect is produced.
+
+Minimal example:
+
+```cpp
+#include <cppbm/decorator.h>
+#include <cstdio>
+#include <string>
+#include <utility>
+
+template <auto Target>
+class RouteDecorator;
+
+template <typename R, typename... Args, R(*Target)(Args...)>
+class RouteDecorator<Target> : public cpp::blackmagic::FunctionDecorator<Target>
+{
+public:
+    RouteDecorator(std::string method, std::string path)
+        : method_(std::move(method)), path_(std::move(path)) {}
+
+    bool BeforeCall(Args...) override
+    {
+        std::printf("[route] %s %s\n", method_.c_str(), path_.c_str());
+        return true;
+    }
+
+private:
+    std::string method_;
+    std::string path_;
+};
+
+class RouteBinder
+{
+public:
+    RouteBinder(std::string method, std::string path)
+        : method_(std::move(method)), path_(std::move(path)) {}
+
+    template <auto Target>
+    auto bind() const
+    {
+        return RouteDecorator<Target>{ method_, path_ };
+    }
+
+private:
+    std::string method_;
+    std::string path_;
+};
+
+class Router
+{
+public:
+    RouteBinder get(const char* path) const
+    {
+        return RouteBinder{ "GET", path };
+    }
+};
+
+inline Router router{};
+
+decorator(@router.get("/health"))
+int health()
+{
+    return 200;
+}
+```
+
 ## Error Policy
 
 ### Hook side
@@ -106,5 +188,3 @@ Defined in `cpp-blackmagic/include/cppbm/internal/depends/error.h`:
 - Member-function address conversion relies on ABI assumptions.
 - DI context is thread-local by default and does not auto-propagate across threads.
 - The repo currently focuses on executable examples and does not provide a full assertion-based regression suite yet.
-
-

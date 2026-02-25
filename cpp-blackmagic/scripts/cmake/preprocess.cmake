@@ -67,7 +67,7 @@ function(CPPBM_ENABLE_DECORATOR)
 		get_filename_component(EXT "${ABS}" EXT)
 		if(EXT MATCHES "^\\.(cc|cpp|cxx|h|hpp|hxx)$")
 			_CPPBM_GET_RELATIVE_SOURCE_PATH("${ABS}" "${DECOR_TARGET}" REL)
-			set(OUT "${CMAKE_BINARY_DIR}/gen/${DECOR_TARGET}/${REL}")
+			set(OUT "${CMAKE_BINARY_DIR}/cppbm-gen/${DECOR_TARGET}/${REL}")
 
 			add_custom_command(
 				OUTPUT "${OUT}"
@@ -137,7 +137,7 @@ function(CPPBM_ENABLE_DEPENDENCY_INJECT)
 		message(FATAL_ERROR "CPPBM_ENABLE_DEPENDENCY_INJECT was called multiple times for target '${INJECT_TARGET}'.")
 	else()
 		# Remove legacy stamp directory from older implementation.
-		file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/gen/${INJECT_TARGET}/.inject_stamps")
+		file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/cppbm-gen/${INJECT_TARGET}/.inject_stamps")
 
 		add_custom_target(${INJECT_TARGET_NAME}
 			DEPENDS ${INJECT_INPUTS}

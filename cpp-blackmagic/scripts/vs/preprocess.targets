@@ -1,0 +1,46 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <!-- Override in .vcxproj if needed -->
+    <CppbmPythonExe Condition="'$(CppbmPythonExe)'==''">python</CppbmPythonExe>
+    <CppbmPythonArgs Condition="'$(CppbmPythonArgs)'==''"></CppbmPythonArgs>
+    <CppbmScriptDir Condition="'$(CppbmScriptDir)'==''">$(MSBuildThisFileDirectory)..\</CppbmScriptDir>
+    <CppbmDecoratorScript Condition="'$(CppbmDecoratorScript)'==''">$(CppbmScriptDir)decorator.py</CppbmDecoratorScript>
+    <CppbmInjectScript Condition="'$(CppbmInjectScript)'==''">$(CppbmScriptDir)inject.py</CppbmInjectScript>
+    <CppbmStrictArg Condition="'$(CppbmStrictArg)'==''">--strict-parser</CppbmStrictArg>
+  </PropertyGroup>
+
+  <Target Name="CppbmPreprocessAndSwapCompileInputs" BeforeTargets="ClCompile">
+    <Error Condition="!Exists('$(CppbmDecoratorScript)')" Text="[cpp-blackmagic] decorator.py not found: $(CppbmDecoratorScript)" />
+    <Error Condition="!Exists('$(CppbmInjectScript)')" Text="[cpp-blackmagic] inject.py not found: $(CppbmInjectScript)" />
+
+    <!-- Collect current compile inputs (only C/C++ source files, exclude generated ones). -->
+    <ItemGroup>
+      <_CppbmCompileInput Include="@(ClCompile)"
+                          Condition="('%(ClCompile.Extension)'=='.cpp' or '%(ClCompile.Extension)'=='.cc' or '%(ClCompile.Extension)'=='.cxx')
+                                     and !$([System.String]::Copy('%(ClCompile.Filename)').Contains('.cppbm.decor'))
+                                     and !$([System.String]::Copy('%(ClCompile.Filename)').Contains('.cppbm.gen'))" />
+      <_CppbmCompileInput Update="@(_CppbmCompileInput)">
+        <CppbmDecorOut>$(IntDir)cppbm\%(RelativeDir)%(Filename).cppbm.decor.cpp</CppbmDecorOut>
+        <CppbmGenOut>$(IntDir)cppbm\%(RelativeDir)%(Filename).cppbm.gen.cpp</CppbmGenOut>
+      </_CppbmCompileInput>
+    </ItemGroup>
+
+    <!-- Pass 1: decorator.py -->
+    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmDecoratorScript)&quot; --in &quot;%(_CppbmCompileInput.FullPath)&quot; --out &quot;%(_CppbmCompileInput.CppbmDecorOut)&quot; $(CppbmStrictArg)"
+          StandardOutputImportance="Normal"
+          StandardErrorImportance="High" />
+
+    <!-- Pass 2: inject.py -->
+    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmInjectScript)&quot; --in &quot;%(_CppbmCompileInput.CppbmDecorOut)&quot; --out &quot;%(_CppbmCompileInput.CppbmGenOut)&quot; $(CppbmStrictArg)"
+          StandardOutputImportance="Normal"
+          StandardErrorImportance="High" />
+
+    <!-- Replace compile inputs for this build: compile generated .cpp, not original .cpp. -->
+    <ItemGroup>
+      <ClCompile Remove="@(_CppbmCompileInput)" />
+      <ClCompile Include="@(_CppbmCompileInput->'%(CppbmGenOut)')" />
+    </ItemGroup>
+  </Target>
+
+</Project>

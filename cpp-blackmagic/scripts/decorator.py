@@ -11,6 +11,7 @@ Non-responsibilities:
 '''
 import re
 import argparse
+import codecs
 from pathlib import Path
 import sys
 
@@ -34,6 +35,60 @@ DECORATOR_AT_SPLIT_RE = re.compile(
 )
 
 SIMPLE_DECORATOR_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def detect_text_codec_and_bom(raw: bytes) -> Tuple[str, bytes]:
+    # BOM-based fast path.
+    if raw.startswith(codecs.BOM_UTF8):
+        return "utf-8", codecs.BOM_UTF8
+    if raw.startswith(codecs.BOM_UTF32_LE):
+        return "utf-32-le", codecs.BOM_UTF32_LE
+    if raw.startswith(codecs.BOM_UTF32_BE):
+        return "utf-32-be", codecs.BOM_UTF32_BE
+    if raw.startswith(codecs.BOM_UTF16_LE):
+        return "utf-16-le", codecs.BOM_UTF16_LE
+    if raw.startswith(codecs.BOM_UTF16_BE):
+        return "utf-16-be", codecs.BOM_UTF16_BE
+
+    # Heuristic for UTF-16 without BOM.
+    if len(raw) >= 4:
+        even_zeros = raw[0::2].count(0)
+        odd_zeros = raw[1::2].count(0)
+        if odd_zeros > len(raw) // 8 and even_zeros < len(raw) // 32:
+            return "utf-16-le", b""
+        if even_zeros > len(raw) // 8 and odd_zeros < len(raw) // 32:
+            return "utf-16-be", b""
+
+    # Fallback codecs (keep lightweight, no external dependency).
+    for codec in ("utf-8", "gb18030", "cp1252", "latin-1"):
+        try:
+            raw.decode(codec)
+            return codec, b""
+        except UnicodeDecodeError:
+            pass
+
+    # Final fallback.
+    return "utf-8", b""
+
+
+def read_text_auto(path: Path) -> Tuple[str, str, bytes]:
+    raw = path.read_bytes()
+    codec, bom = detect_text_codec_and_bom(raw)
+    payload = raw[len(bom):] if len(bom) > 0 else raw
+    try:
+        text = payload.decode(codec)
+    except UnicodeDecodeError as e:
+        raise RuntimeError(f"Failed to decode source file '{path}' with codec '{codec}'.") from e
+    return text, codec, bom
+
+
+def write_text_auto(path: Path, text: str, codec: str, bom: bytes) -> None:
+    try:
+        encoded = text.encode(codec)
+    except UnicodeEncodeError as e:
+        raise RuntimeError(f"Failed to encode output file '{path}' with codec '{codec}'.") from e
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bom + encoded)
 
 def build_cpp_language():
     candidates = []
@@ -505,7 +560,7 @@ def main():
     
     # Keep original source text. We only mask decorator(...) calls and then append
     # generated decorator instances at the end of file.
-    text = src.read_text(encoding="utf-8")
+    text, source_codec, source_bom = read_text_auto(src)
 
     decorators = find_decorators(text)
     
@@ -563,8 +618,7 @@ def main():
 
         masked += sentence + "\n"
     
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(masked, encoding="utf-8")
+    write_text_auto(dst, masked, source_codec, source_bom)
 
 if __name__ == "__main__":
     main()
