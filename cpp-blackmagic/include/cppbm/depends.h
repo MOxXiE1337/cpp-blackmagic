@@ -1,11 +1,24 @@
 ﻿#ifndef __CPPBM_DEPENDS_H__
 #define __CPPBM_DEPENDS_H__
 
+#include <tuple>
+#include <utility>
+
+// File role:
+// Public dependency-injection API surface and @inject decorator binding.
+//
+// Key responsibilities:
+// - Depends(...) placeholder and factory APIs
+// - explicit injection/override registry APIs
+// - runtime argument resolution for @inject wrappers
+// - coroutine-aware invoke path for Task-returning targets
+
 #include "decorator.h"
 #include "internal/depends/error.h"
 #include "internal/depends/meta.h"
 #include "internal/depends/maker.h"
 #include "internal/depends/context.h"
+#include "internal/depends/coroutine.h"
 
 namespace cpp::blackmagic
 {
@@ -13,6 +26,21 @@ namespace cpp::blackmagic
     inline constexpr bool kIsSupportedDependencyHandleV =
         std::is_pointer_v<std::remove_cvref_t<T>>
         || depends::IsReferenceWrapper<std::remove_cvref_t<T>>::value;
+
+    namespace depends
+    {
+        // Return-type trait for coroutine-aware @inject and async metadata path.
+        template <typename T>
+        struct IsTaskReturn : std::false_type
+        {
+        };
+
+        template <typename T>
+        struct IsTaskReturn<Task<T>> : std::true_type
+        {
+            using ValueType = T;
+        };
+    }
 
     // Public Depends() entry:
     // returns a marker object used as a default argument expression.
@@ -30,14 +58,127 @@ namespace cpp::blackmagic
     }
 
     // Depends(factory) entry:
-    // factory must be no-arg and return pointer/reference so lifetime policy is explicit.
+    // factory must be no-arg and return:
+    // - pointer/reference directly, or
+    // - task-like object with Get() whose final result is pointer/reference.
     // The returned maker is converted later according to declared parameter type.
     template <typename T>
     constexpr depends::DependsMakerWithFactory<T> Depends(T(*factory)(), bool cached = true)
     {
-        static_assert(std::is_reference_v<T> || std::is_pointer_v<T>,
-            "Depends(factory): factory return type must be T& or T*.");
+        static_assert(depends::kIsSupportedFactoryReturnV<T>,
+            "Depends(factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
         return { factory, cached };
+    }
+
+    namespace depends::detail
+    {
+        // Convert one factory result to target dependency type under coroutine context.
+        // - direct pointer/reference results: convert immediately
+        // - Task-like results: co_await and then convert
+        template <typename To, typename From>
+        Task<To> ConvertFactoryResultAsync(From&& from)
+        {
+            using FromValue = std::remove_cvref_t<From>;
+            if constexpr (IsTaskReturn<FromValue>::value)
+            {
+                auto task = std::forward<From>(from);
+                if constexpr (std::is_void_v<typename IsTaskReturn<FromValue>::ValueType>)
+                {
+                    co_await task;
+                    static_assert(!std::is_same_v<To, To>,
+                        "Depends(factory): Task<void> cannot be converted to dependency value.");
+                }
+                else
+                {
+                    co_return ConvertFactoryResult<To>(co_await task);
+                }
+            }
+            else
+            {
+                co_return ConvertFactoryResult<To>(std::forward<From>(from));
+            }
+        }
+
+        // Build async metadata for Depends(factory) path.
+        //
+        // Why a named helper instead of an immediately-invoked coroutine lambda:
+        // - coroutine lambdas keep captures in the closure object;
+        // - closure temporaries can be destroyed before resumed execution;
+        // - that can leave dangling capture reads after suspension.
+        //
+        // This helper takes maker by value, so coroutine state is stored safely
+        // inside the coroutine frame itself.
+        template <typename Param, typename Meta, typename FactoryReturn>
+        Task<Meta> MakeDefaultArgMetadataAsyncFromFactory(FactoryReturn(*factory)(), bool cached)
+        {
+            using Raw = DependsRawFromParamT<Param>;
+            decltype(auto) produced = InvokeFactory(factory);
+            DependsPtrValue<Raw> out{};
+            out.ptr = co_await ConvertFactoryResultAsync<Raw*>(
+                std::forward<decltype(produced)>(produced));
+            out.owned = kFactoryProducesPointerV<FactoryReturn>;
+            out.factory = FactoryKeyOf(factory);
+            out.cached = cached;
+            co_return static_cast<Meta>(out);
+        }
+
+        // Build async metadata for plain Depends() path.
+        // Use only primitive parameter types to avoid promise-constructor probing
+        // against DependsMaker conversion operators.
+        template <typename Param, typename Meta>
+        Task<Meta> MakeDefaultArgMetadataAsyncFromDepends(bool cached)
+        {
+            DependsMaker maker{ cached };
+            co_return static_cast<Meta>(MakeDefaultArgMetadata<Param>(std::move(maker)));
+        }
+
+        // Build async metadata for non-Depends value path.
+        // Keep behavior consistent with existing sync metadata builder.
+        template <typename Param, typename Meta, typename Value>
+        Task<Meta> MakeDefaultArgMetadataAsyncFromValue(Value value)
+        {
+            co_return static_cast<Meta>(MakeDefaultArgMetadata<Param>(std::move(value)));
+        }
+    }
+
+    namespace depends
+    {
+        // Async metadata builder used by inject.py-generated registration.
+        //
+        // Why this exists:
+        // - sync metadata path may call Get() for task-like factories
+        // - async @inject parameter pipeline should await task-like factories instead
+        //
+        // Compatibility policy:
+        // - Depends(factory): async path, await factory result if needed
+        // - Depends() / non-Depends expression: fallback to existing sync metadata behavior
+        template <typename Param, typename Expr>
+        Task<DefaultArgMetadataTypeT<Param, Expr&&>> MakeDefaultArgMetadataAsync(Expr&& expr)
+        {
+            using E = RemoveCvRefT<Expr>;
+            using Meta = DefaultArgMetadataTypeT<Param, Expr&&>;
+
+            if constexpr (IsDependsMakerWithFactory<E>::value)
+            {
+                E maker = std::forward<Expr>(expr);
+                return detail::MakeDefaultArgMetadataAsyncFromFactory<Param, Meta>(
+                    maker.factory,
+                    maker.cached);
+            }
+            else if constexpr (IsDependsMaker<E>::value)
+            {
+                E maker = std::forward<Expr>(expr);
+                return detail::MakeDefaultArgMetadataAsyncFromDepends<Param, Meta>(
+                    maker.cached);
+            }
+            else
+            {
+                E value = std::forward<Expr>(expr);
+                return detail::MakeDefaultArgMetadataAsyncFromValue<Param, Meta>(
+                    std::move(value));
+            }
+        }
     }
 
     // Shared implementation for target-scoped and global injection APIs.
@@ -68,8 +209,9 @@ namespace cpp::blackmagic
     template <typename T, typename FactoryReturn>
     bool InjectDependencyAt(const void* target, T&& value, FactoryReturn(*factory)())
     {
-        static_assert(std::is_reference_v<FactoryReturn> || std::is_pointer_v<FactoryReturn>,
-            "InjectDependency(value, factory): factory return type must be T& or T*.");
+        static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
+            "InjectDependency(value, factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
         return InjectDependencyAt(target, depends::FactoryKeyOf(factory), std::forward<T>(value));
     }
 
@@ -137,8 +279,9 @@ namespace cpp::blackmagic
         using U = std::remove_cvref_t<T>;
         static_assert(kIsSupportedDependencyHandleV<U>,
             "RemoveDependency<T>(factory) requires T to be pointer or std::reference_wrapper.");
-        static_assert(std::is_reference_v<FactoryReturn> || std::is_pointer_v<FactoryReturn>,
-            "RemoveDependency<T>(factory): factory return type must be T& or T*.");
+        static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
+            "RemoveDependency<T>(factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
         return depends::RemoveExplicitValueTyped<U>(nullptr, depends::FactoryKeyOf(factory));
     }
 
@@ -157,8 +300,9 @@ namespace cpp::blackmagic
         using U = std::remove_cvref_t<T>;
         static_assert(kIsSupportedDependencyHandleV<U>,
             "RemoveDependency<Target, T>(factory) requires T to be pointer or std::reference_wrapper.");
-        static_assert(std::is_reference_v<FactoryReturn> || std::is_pointer_v<FactoryReturn>,
-            "RemoveDependency<Target, T>(factory): factory return type must be T& or T*.");
+        static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
+            "RemoveDependency<Target, T>(factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
         return depends::RemoveExplicitValueTyped<U>(
             depends::TargetKeyOf<Target>(),
             depends::FactoryKeyOf(factory));
@@ -254,8 +398,9 @@ namespace cpp::blackmagic
         using U = std::remove_cvref_t<T>;
         static_assert(kIsSupportedDependencyHandleV<U>,
             "ScopeOverrideDependency(value, factory) requires pointer/reference-wrapper value.");
-        static_assert(std::is_reference_v<FactoryReturn> || std::is_pointer_v<FactoryReturn>,
-            "ScopeOverrideDependency(value, factory): factory return type must be T& or T*.");
+        static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
+            "ScopeOverrideDependency(value, factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
         return ScopedDependencyOverride<U>{ nullptr, depends::FactoryKeyOf(factory), std::forward<T>(value) };
     }
 
@@ -274,8 +419,9 @@ namespace cpp::blackmagic
         using U = std::remove_cvref_t<T>;
         static_assert(kIsSupportedDependencyHandleV<U>,
             "ScopeOverrideDependency<Target>(value, factory) requires pointer/reference-wrapper value.");
-        static_assert(std::is_reference_v<FactoryReturn> || std::is_pointer_v<FactoryReturn>,
-            "ScopeOverrideDependency<Target>(value, factory): factory return type must be T& or T*.");
+        static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
+            "ScopeOverrideDependency<Target>(value, factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
         return ScopedDependencyOverride<U>{
             depends::TargetKeyOf<Target>(),
             depends::FactoryKeyOf(factory),
@@ -378,6 +524,106 @@ namespace cpp::blackmagic
                     return std::forward<Invoker>(invoker)(ResolveArg<I>(std::get<I>(arg_refs))...);
                 }
             }
+
+            // Async parameter-resolve wrapper.
+            // Phase 2 behavior:
+            // - consumes async metadata entries emitted by inject.py
+            // - awaits task-like Depends(factory) default expressions
+            // - falls back to sync metadata path for backward compatibility
+            template <std::size_t Index, typename A>
+            static Task<std::tuple_element_t<Index, std::tuple<Args...>>> ResolveArgAsync(A& arg)
+            {
+                using Declared = std::tuple_element_t<Index, std::tuple<Args...>>;
+                using Raw = std::remove_cv_t<std::remove_reference_t<Declared>>;
+                const void* target = TargetKeyOf<Target>();
+                const bool is_depends_param = IsDependsPlaceholder<Declared>(arg);
+
+                if constexpr (std::is_reference_v<Declared>)
+                {
+                    if (!is_depends_param)
+                    {
+                        co_return static_cast<Declared>(arg);
+                    }
+
+                    const void* resolved_factory = nullptr;
+                    if (co_await TryResolveDefaultArgForParamAsync<Declared>(target, Index, arg, &resolved_factory))
+                    {
+                        if (auto* resolved_ptr = TryResolveRawPtr<Raw>(target, resolved_factory))
+                        {
+                            co_return static_cast<Declared>(*resolved_ptr);
+                        }
+                    }
+                    co_return FailInject<Declared>(InjectError{
+                        InjectErrorCode::MissingDependency,
+                        target,
+                        Index,
+                        typeid(Raw),
+                        resolved_factory,
+                        "Depends placeholder async resolution failed in @inject: missing slot(T&)."
+                        });
+                }
+                else
+                {
+                    if (!is_depends_param)
+                    {
+                        co_return static_cast<Declared>(arg);
+                    }
+
+                    const void* resolved_factory = nullptr;
+                    if (co_await TryResolveDefaultArgForParamAsync<Declared>(target, Index, arg, &resolved_factory))
+                    {
+                        co_return static_cast<Declared>(arg);
+                    }
+
+                    if constexpr (std::is_pointer_v<Declared>)
+                    {
+                        using Pointee = std::remove_cv_t<std::remove_pointer_t<Declared>>;
+                        co_return FailInject<Declared>(InjectError{
+                            InjectErrorCode::MissingDependency,
+                            target,
+                            Index,
+                            typeid(Pointee),
+                            resolved_factory,
+                            "Depends placeholder async resolution failed in @inject: missing slot(T*)."
+                            });
+                    }
+                    else
+                    {
+                        co_return FailInject<Declared>(InjectError{
+                            InjectErrorCode::MissingDependency,
+                            target,
+                            Index,
+                            typeid(Raw),
+                            resolved_factory,
+                            "Depends placeholder async resolution failed in @inject: missing slot(T)."
+                            });
+                    }
+                }
+            }
+
+            // Coroutine-aware invoke path used when decorated function returns Task<T>.
+            // The pipeline already awaits every resolved parameter and the target call,
+            // so this is the extension point for fully async dependency resolution.
+            template <typename RTask, typename Invoker, std::size_t... I>
+                requires IsTaskReturn<RTask>::value
+            static RTask InvokeAsync(
+                Invoker invoker,
+                std::tuple<Args...> arg_values,
+                std::index_sequence<I...>)
+            {
+                using TaskValue = typename IsTaskReturn<RTask>::ValueType;
+                if constexpr (std::is_void_v<TaskValue>)
+                {
+                    co_await std::forward<Invoker>(invoker)(
+                        (co_await ResolveArgAsync<I>(std::get<I>(arg_values)))...);
+                    co_return;
+                }
+                else
+                {
+                    co_return co_await std::forward<Invoker>(invoker)(
+                        (co_await ResolveArgAsync<I>(std::get<I>(arg_values)))...);
+                }
+            }
         };
     }
 
@@ -393,9 +639,8 @@ namespace cpp::blackmagic
 	public:
 		R Call(Args... args)
 		{
-			// New local context for this call:
-			// owned dependencies created during this call are released on scope exit.
-			depends::ContextScope scope{};
+            auto lease = depends::AcquireInjectCallLease();
+            depends::ActiveInjectStateScope active_state{ lease.StateOwner() };
 			auto arg_refs = std::forward_as_tuple(args...);
             auto invoker = [this](auto&&... resolved_args) -> R {
                 if constexpr (std::is_void_v<R>)
@@ -408,7 +653,34 @@ namespace cpp::blackmagic
                     return this->CallOriginal(std::forward<decltype(resolved_args)>(resolved_args)...);
                 }
                 };
-            return Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+            if constexpr (std::is_void_v<R>)
+            {
+                Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+                return;
+            }
+            else if constexpr (std::is_reference_v<R>)
+            {
+                return Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+            }
+            else if constexpr (depends::IsTaskReturn<R>::value)
+            {
+                // Task-returning @inject uses coroutine-aware resolve/invoke path.
+                // Important lifetime note:
+                // - do not pass arg_refs (stack references) into coroutine frame.
+                // - copy/move Args... into tuple<Args...> so async resume never touches
+                //   invalid stack addresses after Call() returns.
+                auto arg_values = std::tuple<Args...>{ std::forward<Args>(args)... };
+                auto result = Resolver::template InvokeAsync<R>(
+                    invoker,
+                    std::move(arg_values),
+                    std::index_sequence_for<Args...>{});
+                return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+            }
+            else
+            {
+                auto result = Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+                return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+            }
 		}
 	};
 
@@ -421,7 +693,8 @@ namespace cpp::blackmagic
     public:
         R Call(C* thiz, Args... args)
         {
-            depends::ContextScope scope{};
+            auto lease = depends::AcquireInjectCallLease();
+            depends::ActiveInjectStateScope active_state{ lease.StateOwner() };
             auto arg_refs = std::forward_as_tuple(args...);
             auto invoker = [this, thiz](auto&&... resolved_args) -> R {
                 if constexpr (std::is_void_v<R>)
@@ -434,7 +707,34 @@ namespace cpp::blackmagic
                     return this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
                 }
                 };
-            return Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+            if constexpr (std::is_void_v<R>)
+            {
+                Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+                return;
+            }
+            else if constexpr (std::is_reference_v<R>)
+            {
+                return Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+            }
+            else if constexpr (depends::IsTaskReturn<R>::value)
+            {
+                // Task-returning @inject uses coroutine-aware resolve/invoke path.
+                // Important lifetime note:
+                // - do not pass arg_refs (stack references) into coroutine frame.
+                // - copy/move Args... into tuple<Args...> so async resume never touches
+                //   invalid stack addresses after Call() returns.
+                auto arg_values = std::tuple<Args...>{ std::forward<Args>(args)... };
+                auto result = Resolver::template InvokeAsync<R>(
+                    invoker,
+                    std::move(arg_values),
+                    std::index_sequence_for<Args...>{});
+                return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+            }
+            else
+            {
+                auto result = Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+                return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+            }
         }
     };
 
@@ -447,7 +747,8 @@ namespace cpp::blackmagic
     public:
         R Call(const C* thiz, Args... args)
         {
-            depends::ContextScope scope{};
+            auto lease = depends::AcquireInjectCallLease();
+            depends::ActiveInjectStateScope active_state{ lease.StateOwner() };
             auto arg_refs = std::forward_as_tuple(args...);
             auto invoker = [this, thiz](auto&&... resolved_args) -> R {
                 if constexpr (std::is_void_v<R>)
@@ -460,7 +761,34 @@ namespace cpp::blackmagic
                     return this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
                 }
                 };
-            return Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+            if constexpr (std::is_void_v<R>)
+            {
+                Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+                return;
+            }
+            else if constexpr (std::is_reference_v<R>)
+            {
+                return Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+            }
+            else if constexpr (depends::IsTaskReturn<R>::value)
+            {
+                // Task-returning @inject uses coroutine-aware resolve/invoke path.
+                // Important lifetime note:
+                // - do not pass arg_refs (stack references) into coroutine frame.
+                // - copy/move Args... into tuple<Args...> so async resume never touches
+                //   invalid stack addresses after Call() returns.
+                auto arg_values = std::tuple<Args...>{ std::forward<Args>(args)... };
+                auto result = Resolver::template InvokeAsync<R>(
+                    invoker,
+                    std::move(arg_values),
+                    std::index_sequence_for<Args...>{});
+                return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+            }
+            else
+            {
+                auto result = Resolver::template Invoke<R>(invoker, arg_refs, std::index_sequence_for<Args...>{});
+                return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+            }
         }
     };
 

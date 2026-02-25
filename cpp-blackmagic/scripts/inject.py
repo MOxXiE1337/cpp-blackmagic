@@ -65,6 +65,25 @@ def build_default_arg_registration(func: dict, pd: dict) -> str:
     )
 
 
+def build_default_arg_registration_async(func: dict, pd: dict) -> str:
+    reg_var = f'__cppbm_default_arg_reg_async_{func["name"]}_{func["start"]}_{pd["index"]}'
+    func_fullname = func["fullname"]
+    param_type = pd["param_type"]
+    default_expr = pd["default_expr"]
+
+    # Async metadata variant:
+    # keep exact expression text and defer factory execution into coroutine pipeline.
+    reg_factory = (
+        f'[]() {{ return ::cpp::blackmagic::depends::MakeDefaultArgMetadataAsync<{param_type}>({default_expr}); }}'
+    )
+
+    return (
+        f'static const bool {reg_var} = '
+        f'::cpp::blackmagic::depends::InjectRegistry::Register<&{func_fullname}, {pd["index"]}>('
+        f'{reg_factory});'
+    )
+
+
 def extract_inject_targets_from_generated_bindings(text: str) -> Set[str]:
     # Supports decorator-first pipeline:
     # decorator.py emits lines like:
@@ -179,12 +198,12 @@ def main():
                 continue
             default_arg_registry_seen.add(reg_key)
 
-            reg_sentence = build_default_arg_registration(func, pd)
-            default_arg_registry_sentences.append(reg_sentence)
-            print(
-                f'register default-arg (@inject {func_fullname} param#{pd["index"]}) | '
-                + reg_sentence
-            )
+            reg_sentence_sync = build_default_arg_registration(func, pd)
+            reg_sentence_async = build_default_arg_registration_async(func, pd)
+            default_arg_registry_sentences.append(reg_sentence_sync)
+            default_arg_registry_sentences.append(reg_sentence_async)
+            print(f"[inject] reg {func_fullname}#{pd['index']} sync")
+            print(f"[inject] reg {func_fullname}#{pd['index']} async")
 
     out_text = base_text
     if len(default_arg_registry_sentences) > 0:

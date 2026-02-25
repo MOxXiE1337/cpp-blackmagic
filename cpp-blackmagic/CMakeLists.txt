@@ -4,6 +4,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(cpp-blackmagic STATIC
     include/cppbm/internal/utils/noncopyable.h
+    include/cppbm/internal/utils/contextvar.h
     include/cppbm/internal/hook/hooker.h
     include/cppbm/internal/hook/error.h
     include/cppbm/internal/hook/hook.h
@@ -19,6 +20,7 @@ add_library(cpp-blackmagic STATIC
 
     include/cppbm/decorator.h
     include/cppbm/depends.h
+    include/cppbm/internal/depends/coroutine.h
     )
 
 target_include_directories(cpp-blackmagic

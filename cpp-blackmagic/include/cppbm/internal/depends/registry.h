@@ -273,13 +273,70 @@ namespace cpp::blackmagic::depends
         }
         if (const auto* typed = std::any_cast<U>(value))
         {
-            return *typed;
+            if constexpr (std::is_copy_constructible_v<U>)
+            {
+                return *typed;
+            }
+            else
+            {
+                // Const any cannot move out a move-only payload.
+                return std::nullopt;
+            }
+        }
+        if (const auto* boxed = std::any_cast<std::shared_ptr<U>>(value))
+        {
+            if (boxed->get() == nullptr)
+            {
+                return std::nullopt;
+            }
+            if constexpr (std::is_copy_constructible_v<U>)
+            {
+                return **boxed;
+            }
+            else
+            {
+                // Stored as shared_ptr<U> for move-only registration path.
+                // Const extraction still cannot consume ownership.
+                return std::nullopt;
+            }
+        }
+        return std::nullopt;
+    }
+
+    template <typename U>
+    std::optional<U> AnyTo(std::any* value)
+    {
+        if (value == nullptr || !value->has_value())
+        {
+            return std::nullopt;
+        }
+        // Non-const any path supports move-only payloads (e.g. Task<T> metadata).
+        // Caller controls value lifetime and should pass rvalue any when moving out.
+        if (auto* typed = std::any_cast<U>(value))
+        {
+            return std::optional<U>(std::move(*typed));
+        }
+        // Move-only metadata can be boxed as shared_ptr<U> in std::any
+        // because std::any requires copy-constructible stored types.
+        if (auto* boxed = std::any_cast<std::shared_ptr<U>>(value))
+        {
+            if (boxed->get() == nullptr)
+            {
+                return std::nullopt;
+            }
+            return std::optional<U>(std::move(**boxed));
         }
         return std::nullopt;
     }
 
     template <typename U>
     std::optional<U> AnyTo(const std::any& value)
+    {
+        return AnyTo<U>(std::addressof(value));
+    }
+
+    template <typename U>
+    std::optional<U> AnyTo(std::any&& value)
     {
         return AnyTo<U>(std::addressof(value));
     }
@@ -479,7 +536,17 @@ namespace cpp::blackmagic::depends
                 "InjectRegistry::Register requires non-reference value type.");
 
             ErasedFactory erased = [fac = std::forward<Factory>(factory)]() mutable -> std::any {
-                return std::any(static_cast<U>(fac()));
+                U produced = static_cast<U>(fac());
+                if constexpr (std::is_copy_constructible_v<U>)
+                {
+                    return std::any(std::move(produced));
+                }
+                else
+                {
+                    // std::any cannot hold move-only U directly.
+                    // Box it into shared_ptr<U> and let AnyTo<U>(std::any*) unbox by move.
+                    return std::any(std::make_shared<U>(std::move(produced)));
+                }
                 };
 
             // Metadata factories are single-entry per key.
@@ -500,7 +567,8 @@ namespace cpp::blackmagic::depends
             {
                 return std::nullopt;
             }
-            return AnyTo<U>((*(*erased))());
+            auto value = (*(*erased))();
+            return AnyTo<U>(std::move(value));
         }
     };
 }

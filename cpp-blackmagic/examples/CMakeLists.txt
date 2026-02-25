@@ -22,3 +22,11 @@ add_executable(cppbm-example-depends
 CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-depends)
 CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET cppbm-example-depends)
 target_link_libraries(cppbm-example-depends PRIVATE cpp-blackmagic)
+
+add_executable(cppbm-example-http-server
+    http-server/http_server_example.cpp
+)
+
+CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-http-server)
+CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET cppbm-example-http-server)
+target_link_libraries(cppbm-example-http-server PRIVATE cpp-blackmagic)

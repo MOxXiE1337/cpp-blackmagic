@@ -3,7 +3,7 @@
 //
 // This layer does not decide high-level policy of parameter resolution;
 // it only provides:
-// - thread-local context stack
+// - execution-context aware current-state routing (contextvars style)
 // - slot structures and storage helpers
 // - low-level explicit-injection lookup and caching
 
@@ -11,11 +11,14 @@
 #define __CPPBM_DEPENDS_CONTEXT_H__
 
 #include <cassert>
+#include <algorithm>
 #include <memory>
 #include <typeindex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include "../utils/contextvar.h"
 #include "meta.h"
 #include "registry.h"
 
@@ -67,28 +70,82 @@ namespace cpp::blackmagic::depends
         std::unordered_map<SlotKey, ContextSlot, SlotKeyHash> slots{};
     };
 
-    struct ThreadInjectState
+    // One injectable call-chain state.
+    // This can outlive the stack frame that created it (e.g. coroutine return object).
+    struct InjectContextState
     {
-        // Root node for current thread.
         InjectContext root{};
-
-        // Active context stack (back() is current context).
         std::vector<InjectContext*> context_stack{};
-
-        // Nesting depth for "execute Depends factories now" mode.
         int execute_depends_depth = 0;
+        int inject_call_depth = 0;
 
-        ThreadInjectState()
+        InjectContextState()
         {
             context_stack.push_back(&root);
         }
     };
 
-    inline ThreadInjectState& GetThreadInjectState()
+    // Per-thread ambient state fallback.
+    // This preserves legacy behavior when no coroutine/context binding is active.
+    inline std::shared_ptr<InjectContextState> GetAmbientStateOwner()
     {
-        static thread_local ThreadInjectState state{};
-        return state;
+        static thread_local std::shared_ptr<InjectContextState> ambient = std::make_shared<InjectContextState>();
+        return ambient;
     }
+
+    // "Current active state" context variable.
+    // - sync code: usually unset, so caller falls back to ambient state
+    // - coroutine code: runtime can bind/unbind around resume points
+    inline utils::ContextVar<std::shared_ptr<InjectContextState>>& ActiveInjectStateVar()
+    {
+        static utils::ContextVar<std::shared_ptr<InjectContextState>> var{};
+        return var;
+    }
+
+    inline std::shared_ptr<InjectContextState> GetActiveStateOwner()
+    {
+        auto maybe = ActiveInjectStateVar().Get();
+        if (!maybe || !(*maybe))
+        {
+            // No bound async state on this execution path:
+            // degrade to thread-local ambient owner (sync-compatible behavior).
+            return GetAmbientStateOwner();
+        }
+        return *maybe;
+    }
+
+    inline InjectContextState& GetActiveState()
+    {
+        return *GetActiveStateOwner();
+    }
+
+    // Temporarily switch thread-local active state.
+    // Used by @inject entry and coroutine resume adapters.
+    class ActiveInjectStateScope
+    {
+    public:
+        explicit ActiveInjectStateScope(std::shared_ptr<InjectContextState> state)
+            : token_(ActiveInjectStateVar().Set(state ? std::move(state) : GetAmbientStateOwner()))
+        {
+        }
+
+        ~ActiveInjectStateScope()
+        {
+        }
+
+        ActiveInjectStateScope(const ActiveInjectStateScope&) = delete;
+        ActiveInjectStateScope& operator=(const ActiveInjectStateScope&) = delete;
+
+        ActiveInjectStateScope(ActiveInjectStateScope&& rhs) noexcept
+            : token_(std::move(rhs.token_))
+        {
+        }
+
+        ActiveInjectStateScope& operator=(ActiveInjectStateScope&& rhs) noexcept = delete;
+
+    private:
+        utils::ContextVar<std::shared_ptr<InjectContextState>>::Token token_{};
+    };
 
     // Scope guard that enables factory-execution mode while alive.
     class DependsExecutionScope
@@ -96,12 +153,12 @@ namespace cpp::blackmagic::depends
     public:
         DependsExecutionScope()
         {
-            ++GetThreadInjectState().execute_depends_depth;
+            ++GetActiveState().execute_depends_depth;
         }
 
         ~DependsExecutionScope()
         {
-            auto& depth = GetThreadInjectState().execute_depends_depth;
+            auto& depth = GetActiveState().execute_depends_depth;
             assert(depth > 0 && "DependsExecutionScope underflow.");
             if (depth > 0)
             {
@@ -117,17 +174,17 @@ namespace cpp::blackmagic::depends
 
     inline bool ShouldExecuteDependsFactories()
     {
-        return GetThreadInjectState().execute_depends_depth > 0;
+        return GetActiveState().execute_depends_depth > 0;
     }
 
     inline InjectContext& RootContext()
     {
-        return GetThreadInjectState().root;
+        return GetActiveState().root;
     }
 
     inline std::vector<InjectContext*>& ContextStack()
     {
-        return GetThreadInjectState().context_stack;
+        return GetActiveState().context_stack;
     }
 
     inline InjectContext* CurrentContext()
@@ -137,29 +194,145 @@ namespace cpp::blackmagic::depends
         return stack.back();
     }
 
-    // Push child context on enter, pop on exit.
+    // One pushed inject-call frame that may outlive current stack frame.
+    class InjectContextLease
+    {
+    public:
+        InjectContextLease(std::shared_ptr<InjectContextState> state, bool track_inject_call_depth)
+            : state_(state ? std::move(state) : std::make_shared<InjectContextState>()),
+            local_(std::make_unique<InjectContext>()),
+            track_inject_call_depth_(track_inject_call_depth)
+        {
+            auto& stack = state_->context_stack;
+            assert(!stack.empty() && "InjectContextState stack should never be empty.");
+            local_->parent = stack.back();
+            stack.push_back(local_.get());
+            if (track_inject_call_depth_)
+            {
+                ++state_->inject_call_depth;
+            }
+        }
+
+        ~InjectContextLease()
+        {
+            if (!active_)
+            {
+                return;
+            }
+
+            auto& stack = state_->context_stack;
+            // Coroutine scheduling can make lease destruction order non-LIFO.
+            // Remove this scope frame defensively wherever it currently lives
+            // to avoid leaving dangling InjectContext* in stack.
+            if (!stack.empty())
+            {
+                auto it = std::find(stack.begin(), stack.end(), local_.get());
+                if (it != stack.end())
+                {
+                    stack.erase(it);
+                }
+            }
+            if (stack.empty())
+            {
+                stack.push_back(&state_->root);
+            }
+            if (track_inject_call_depth_)
+            {
+                auto& depth = state_->inject_call_depth;
+                assert(depth > 0 && "InjectContextLease call depth underflow.");
+                if (depth > 0)
+                {
+                    --depth;
+                }
+            }
+            active_ = false;
+        }
+
+        InjectContextLease(const InjectContextLease&) = delete;
+        InjectContextLease& operator=(const InjectContextLease&) = delete;
+
+        InjectContextLease(InjectContextLease&& rhs) noexcept
+            : state_(std::move(rhs.state_)),
+            local_(std::move(rhs.local_)),
+            track_inject_call_depth_(rhs.track_inject_call_depth_),
+            active_(rhs.active_)
+        {
+            rhs.active_ = false;
+        }
+
+        InjectContextLease& operator=(InjectContextLease&& rhs) noexcept = delete;
+
+        std::shared_ptr<InjectContextState> StateOwner() const
+        {
+            return state_;
+        }
+
+    private:
+        std::shared_ptr<InjectContextState> state_{};
+        std::unique_ptr<InjectContext> local_{};
+        bool track_inject_call_depth_ = false;
+        bool active_ = true;
+    };
+
+    // Heap handle for carrying one inject-call lease across async boundaries.
+    //
+    // Why a shared_ptr wrapper:
+    // - InjectContextLease is move-only.
+    // - Many task implementations prefer storing copyable handles.
+    // - shared_ptr keeps semantics explicit: once last owner is gone, lease is released.
+    using InjectContextLeaseHandle = std::shared_ptr<InjectContextLease>;
+
+    inline InjectContextLeaseHandle MakeInjectContextLeaseHandle(InjectContextLease&& lease)
+    {
+        return std::make_shared<InjectContextLease>(std::move(lease));
+    }
+
+    // Runtime helper for task resume path:
+    // activate state from bound lease for current thread, then rely on RAII to restore.
+    //
+    // Typical coroutine runtime usage:
+    //   auto guard = depends::ActivateInjectStateFromLease(bound_lease_handle);
+    //   resume_underlying_coroutine();
+    inline ActiveInjectStateScope ActivateInjectStateFromLease(const InjectContextLeaseHandle& lease)
+    {
+        if (lease)
+        {
+            return ActiveInjectStateScope{ lease->StateOwner() };
+        }
+        return ActiveInjectStateScope{ GetActiveStateOwner() };
+    }
+
+    // Extract state owner from lease handle.
+    // When lease is missing, fall back to current active state.
+    inline std::shared_ptr<InjectContextState> InjectStateFromLease(const InjectContextLeaseHandle& lease)
+    {
+        if (lease)
+        {
+            return lease->StateOwner();
+        }
+        return GetActiveStateOwner();
+    }
+
+    inline InjectContextLease AcquireInjectCallLease()
+    {
+        auto state = GetActiveStateOwner();
+        if (!state || state->inject_call_depth <= 0)
+        {
+            // Top-level @inject call (not inside another @inject scope):
+            // use isolated state root so sibling requests do not share caches.
+            state = std::make_shared<InjectContextState>();
+        }
+        // Nested @inject call reuses existing state and pushes one child context frame.
+        return InjectContextLease{ std::move(state), true };
+    }
+
+    // Backward-compatible scoped child context on current active state.
     class ContextScope
     {
     public:
         ContextScope()
+            : lease_(GetActiveStateOwner(), false)
         {
-            local_.parent = CurrentContext();
-            ContextStack().push_back(&local_);
-        }
-
-        ~ContextScope()
-        {
-            auto& stack = ContextStack();
-            assert(!stack.empty() && stack.back() == &local_
-                && "ContextScope stack mismatch: destroying non-top scope.");
-            if (!stack.empty() && stack.back() == &local_)
-            {
-                stack.pop_back();
-            }
-            if (stack.empty())
-            {
-                stack.push_back(&RootContext());
-            }
         }
 
         ContextScope(const ContextScope&) = delete;
@@ -168,8 +341,102 @@ namespace cpp::blackmagic::depends
         ContextScope& operator=(ContextScope&&) = delete;
 
     private:
-        InjectContext local_{};
+        InjectContextLease lease_;
     };
+
+    inline std::shared_ptr<InjectContextState> CurrentInjectStateOwner()
+    {
+        return GetActiveStateOwner();
+    }
+
+    namespace detail
+    {
+        template <typename R>
+        concept HasMemberBindInjectContext = requires(R & value, InjectContextLease && lease)
+        {
+            value.BindInjectContext(std::move(lease));
+        };
+
+        template <typename R>
+        concept HasMemberBindInjectContextHandle = requires(R & value, InjectContextLeaseHandle lease)
+        {
+            value.BindInjectContext(std::move(lease));
+        };
+
+        template <typename R>
+        concept HasMemberSetInjectContextHandle = requires(R & value, InjectContextLeaseHandle lease)
+        {
+            value.SetInjectContext(std::move(lease));
+        };
+
+        template <typename R>
+        concept HasAdlBindInjectContext = requires(R && value, InjectContextLease && lease)
+        {
+            BindInjectContext(std::forward<R>(value), std::move(lease));
+        };
+
+        template <typename R>
+        concept HasAdlBindInjectContextHandle = requires(R && value, InjectContextLeaseHandle lease)
+        {
+            BindInjectContext(std::forward<R>(value), std::move(lease));
+        };
+
+        template <typename R>
+        concept HasAdlSetInjectContextHandle = requires(R && value, InjectContextLeaseHandle lease)
+        {
+            SetInjectContext(std::forward<R>(value), std::move(lease));
+        };
+
+        template <typename R>
+        std::remove_cvref_t<R> AutoBindInjectContext(R&& value, InjectContextLease&& lease)
+        {
+            using V = std::remove_cvref_t<R>;
+            static_assert(!std::is_reference_v<R>,
+                "AutoBindInjectContext expects non-reference return types.");
+
+            // Keep a copyable handle so adapters that do not support move-only lease
+            // can still capture it in task objects.
+            auto lease_handle = MakeInjectContextLeaseHandle(std::move(lease));
+
+            if constexpr (HasMemberBindInjectContext<V>)
+            {
+                V out = std::forward<R>(value);
+                out.BindInjectContext(std::move(*lease_handle));
+                return out;
+            }
+            else if constexpr (HasMemberBindInjectContextHandle<V>)
+            {
+                V out = std::forward<R>(value);
+                out.BindInjectContext(lease_handle);
+                return out;
+            }
+            else if constexpr (HasMemberSetInjectContextHandle<V>)
+            {
+                V out = std::forward<R>(value);
+                out.SetInjectContext(lease_handle);
+                return out;
+            }
+            else if constexpr (HasAdlBindInjectContext<R>)
+            {
+                return BindInjectContext(std::forward<R>(value), std::move(*lease_handle));
+            }
+            else if constexpr (HasAdlBindInjectContextHandle<R>)
+            {
+                return BindInjectContext(std::forward<R>(value), lease_handle);
+            }
+            else if constexpr (HasAdlSetInjectContextHandle<R>)
+            {
+                return SetInjectContext(std::forward<R>(value), lease_handle);
+            }
+            else
+            {
+                // No adapter found:
+                // returning value as-is keeps backward compatibility for sync return types.
+                // For coroutine return types, user should implement one supported adapter.
+                return std::forward<R>(value);
+            }
+        }
+    }
 
     [[nodiscard]] inline ContextSlot* FindSlotInChain(std::type_index key, const void* factory = nullptr)
     {

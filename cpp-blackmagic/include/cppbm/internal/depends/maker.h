@@ -28,6 +28,7 @@ namespace cpp::blackmagic::depends
         bool cached = true;
 
         template <typename T>
+            requires (!std::is_reference_v<T> && !std::is_pointer_v<T>)
         operator T& () const
         {
             if (ShouldExecuteDependsFactories())
@@ -38,6 +39,7 @@ namespace cpp::blackmagic::depends
         }
 
         template <typename T>
+            requires (!std::is_reference_v<T> && !std::is_pointer_v<T>)
         operator T* () const
         {
             if (ShouldExecuteDependsFactories())
@@ -73,14 +75,18 @@ namespace cpp::blackmagic::depends
     template <typename T>
     struct DependsMakerWithFactory
     {
-        // Factory return must be pointer/reference, and factory must be no-arg.
-        static_assert(std::is_reference_v<T> || std::is_pointer_v<T>,
-            "Depends(factory): factory return type must be T& or T*.");
+        // Factory must be no-arg and return:
+        // - pointer/reference directly, or
+        // - task-like object with Get() whose final result is pointer/reference.
+        static_assert(kIsSupportedFactoryReturnV<T>,
+            "Depends(factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
 
         T(*factory)() = nullptr;
         bool cached = true;
 
         template <typename U>
+            requires (!std::is_reference_v<U> && !std::is_pointer_v<U>)
         operator U& () const
         {
             if (ShouldExecuteDependsFactories())
@@ -91,6 +97,7 @@ namespace cpp::blackmagic::depends
         }
 
         template <typename U>
+            requires (!std::is_reference_v<U> && !std::is_pointer_v<U>)
         operator U* () const
         {
             if (ShouldExecuteDependsFactories())

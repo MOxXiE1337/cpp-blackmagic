@@ -616,10 +616,10 @@ def main():
 
             dec_type = ns_scope + "_Decorator_" + dec.name + "_"
             sentence = f'inline {dec_type}<&{func_fullname}> {var_name}{{}};'
-            print(f'generate decorator ({ns_scope}@{dec.name} => {func_fullname}) | ' + sentence)
+            print(f"[decorator] reg {func_fullname} <- {ns_scope}@{dec.name}")
         elif dec.kind == "expr":
             sentence = f'inline auto {var_name} = ({dec.expr}).bind<&{func_fullname}>();'
-            print(f'generate decorator (@{dec.expr} => {func_fullname}) | ' + sentence)
+            print(f"[decorator] reg {func_fullname} <- @{dec.expr}")
         else:
             raise RuntimeError(f"Unknown decorator kind: {dec.kind}")
 
