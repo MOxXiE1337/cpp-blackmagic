@@ -1,8 +1,28 @@
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 add_library(cpp-blackmagic STATIC
-    include/cppbm/hooker.h
-    include/cppbm/hook.h
+    include/cppbm/internal/utils/noncopyable.h
+    include/cppbm/internal/hook/hooker.h
+    include/cppbm/internal/hook/error.h
+    include/cppbm/internal/hook/hook.h
+
+    #include/cppbm/depends_registry.h
+    #include/cppbm/depends_context.h
+    #include/cppbm/depends.h
+    include/cppbm/internal/depends/factory_invoke.h
+    include/cppbm/internal/depends/placeholder.h
+    include/cppbm/internal/depends/registry.h
+    include/cppbm/internal/depends/error.h
+    include/cppbm/internal/depends/meta.h
+    include/cppbm/internal/depends/context.h
+    include/cppbm/internal/depends/resolve.h
+    include/cppbm/internal/depends/maker.h
+
     include/cppbm/decorator.h
-    include/cppbm/noncopyable.h)
+    include/cppbm/depends.h
+    )
 
 
 target_include_directories(cpp-blackmagic

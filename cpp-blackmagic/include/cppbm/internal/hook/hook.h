@@ -1,14 +1,17 @@
+#ifndef __CPPBM_HOOK_HOOK_H__
+#define __CPPBM_HOOK_HOOK_H__
+
 #include <mutex>
 #include <atomic>
+#include <cassert>
 #include <cstring>
-#include <utility>
+#include <functional>
 #include <type_traits>
 
+#include "error.h"
 #include "hooker.h"
-#include "noncopyable.h"
-
-#ifndef __CPPBM_HOOK_H__
-#define __CPPBM_HOOK_H__
+#include "../utils/noncopyable.h"
+#include "../utils/scope_exit.h"
 
 #ifdef _WIN32
 #ifndef _WIN64
@@ -23,11 +26,9 @@ namespace cpp::blackmagic::hook
     // This requires the member-function pointer representation to fit into one
     // fits in one machine pointer (typically single inheritance).
     template <typename MemFn>
+        requires std::is_member_function_pointer_v<std::remove_cvref_t<MemFn>>
     inline void* MemberPointerToAddress(MemFn fn)
     {
-        static_assert(std::is_member_function_pointer_v<MemFn>,
-            "MemFn must be a member-function pointer.");
-
         void* addr = nullptr;
         std::memcpy(&addr, &fn, sizeof(addr));
         return addr;
@@ -35,8 +36,9 @@ namespace cpp::blackmagic::hook
 
     // Member function pointer
     template <typename R, typename ThisPtr, typename... Args>
-    struct MemberOriginalFnT {
-#ifdef HOOK_WIN32
+    struct MemberOriginalFnT
+    {
+#ifdef _CPPBM_HOOK_WIN32
         // x86 member functions use __thiscall semantics for original trampoline.
         using type = R(__thiscall*)(ThisPtr, Args...);
 #else
@@ -50,70 +52,81 @@ namespace cpp::blackmagic::hook
     // Per-hook shared state:
     // - self_ points to the current active decorator instance.
     // - original_ stores the trampoline returned by MinHook.
-    // - install/uninstall are protected by an instance mutex.
+    // - Installed/Uninstall are protected by an mutex.
     template <typename Owner, typename OrigFn>
-    class HookState : private NonCopyable
+    class HookState : private utils::NonCopyable
     {
     public:
         bool InstallAt(void* target, void* detour, Owner* self)
         {
             std::lock_guard<std::mutex> guard{ mtx_ };
-            if (installed_)
+            if (installed_.load(std::memory_order_acquire)) // already installed
                 return true;
-            if (!target || !detour || !self) return false;
 
-            Hooker* hooker = Hooker::GetInstance();
-            if (!hooker)
+            ClearLastHookError();
+
+            if (!target || !detour || !self)
             {
-                return false;
+                return HandleHookFailure(HookError{
+                    HookErrorCode::InvalidInstallArgument,
+                    target,
+                    detour,
+                    "Hook install failed: target/detour/self cannot be null."
+                    });
             }
+
+            Hooker& hooker = Hooker::GetInstance();
 
             // create hook
             OrigFn original = nullptr;
-            if (!hooker->CreateHook(
-                target,
-                detour,
-                reinterpret_cast<void**>(&original)
-            ))
+            if (!hooker.CreateHook(target, detour, reinterpret_cast<void**>(&original)))
             {
-                return false;
+                return HandleHookFailure(HookError{
+                    HookErrorCode::CreateHookFailed,
+                    target,
+                    detour,
+                    "Hook install failed: backend CreateHook() returned false."
+                    });
             }
 
             // Enable hook
-            if (!hooker->EnableHook(target))
+            if (!hooker.EnableHook(target))
             {
-                hooker->RemoveHook(target);
-                return false;
+                hooker.RemoveHook(target);
+                return HandleHookFailure(HookError{
+                    HookErrorCode::EnableHookFailed,
+                    target,
+                    detour,
+                    "Hook install failed: backend EnableHook() returned false."
+                    });
             }
 
             // Store data
             original_.store(original, std::memory_order_release);
             self_.store(self, std::memory_order_release);
-            installed_ = true;
+            installed_.store(true, std::memory_order_release);
             return true;
         }
 
         void UninstallAt(void* target)
         {
             std::lock_guard<std::mutex> guard{ mtx_ };
-            if (!installed_)
+            if (!installed_.load(std::memory_order_acquire))
                 return;
 
-            Hooker* hooker = Hooker::GetInstance();
-            if (hooker)
-            {
-                hooker->DisableHook(target);
-                hooker->RemoveHook(target);
-            }
+            Hooker& hooker = Hooker::GetInstance();
+
+            hooker.DisableHook(target);
+            hooker.RemoveHook(target);
 
             self_.store(nullptr, std::memory_order_release);
             original_.store(nullptr, std::memory_order_release);
-            installed_ = false;
+            installed_.store(false, std::memory_order_release);
         }
 
-        bool IsInstalled() const
+        [[nodiscard]] bool IsInstalled() const
         {
-            return installed_;
+            return installed_.load(std::memory_order_acquire);
         }
 
     protected:
@@ -131,27 +144,28 @@ namespace cpp::blackmagic::hook
         inline static std::atomic<Owner*> self_{ nullptr };
         inline static std::atomic<OrigFn> original_{ nullptr };
 
-        bool installed_ = false;
+        std::atomic_bool installed_{ false };
         std::mutex mtx_;
     };
 
     // Unified parent:
-    // - owns install/uninstall/is_installed
+    // - owns Install/Uninstall/IsInstalled
     // - defines BeforeCall/Call/AfterCall extension points
     // - defines CallOriginal and detour dispatch pipeline
     template <typename Derived, typename OrigFn, typename R, typename... CallArgs>
-    class HookRuntime : private HookState<Derived, OrigFn>
+    class HookPipeline : private HookState<Derived, OrigFn>
     {
     public:
         using Core = HookState<Derived, OrigFn>;
 
-        HookRuntime(void* target, void* detour)
+        HookPipeline(void* target, void* detour)
             : target_(target), detour_(detour)
         {
-            (void)Install();
+            // Will be installed by decorator, or manually install.
+            // Install();
         }
 
-        virtual ~HookRuntime()
+        virtual ~HookPipeline()
         {
             Uninstall();
         }
@@ -161,7 +175,7 @@ namespace cpp::blackmagic::hook
         virtual void AfterCall() {}
 
     public:
-        bool Install()
+        [[nodiscard]] bool Install()
         {
             return Core::InstallAt(target_, detour_, static_cast<Derived*>(this));
         }
@@ -171,7 +185,7 @@ namespace cpp::blackmagic::hook
             return Core::UninstallAt(target_);
         }
 
-        bool IsInstalled() const
+        [[nodiscard]] bool IsInstalled() const
         {
             return Core::IsInstalled();
         }
@@ -185,13 +199,14 @@ namespace cpp::blackmagic::hook
             if constexpr (std::is_void_v<R>)
             {
                 if (orig)
-                    return orig(args...);
+                    std::invoke(orig, args...);
                 return;
             }
             else
             {
-                if (!orig) return DefaultReturn();
-                return orig(args...);
+                if (!orig)
+                    return DefaultReturn();
+                return std::invoke(orig, args...);
             }
         }
 
@@ -215,28 +230,39 @@ namespace cpp::blackmagic::hook
                 }
             }
 
+            auto on_exit = utils::ScopeExit([&]
+                { self->AfterCall(); });
+
             if constexpr (std::is_void_v<R>)
             {
-                self->Call(args...);
-                self->AfterCall();
+                self->Call(args...); // if Call throw exceptions, AfterCall will still be invoked
                 return;
             }
             else
             {
-                R ret = self->Call(args...);
-                self->AfterCall();
-                return ret;
+                return self->Call(args...);
             }
         }
 
-
     private:
-        template <typename Q = R, std::enable_if_t<!std::is_void_v<Q>, int> = 0>
-        static Q DefaultReturn() {
-            static_assert(std::is_default_constructible_v<Q>,
-                "R must be default-constructible when BeforeCall returns false "
-                "or original function is unavailable.");
-            return Q{};
+        template <typename Q = R>
+            requires(!std::is_void_v<Q>)
+        static Q DefaultReturn()
+        {
+            if constexpr (std::is_reference_v<Q>)
+            {
+                assert(false && "HookPipeline DefaultReturn failed: reference return has no default value.");
+                std::terminate();
+            }
+            else if constexpr (std::is_default_constructible_v<Q>)
+            {
+                return Q{};
+            }
+            else
+            {
+                assert(false && "HookPipeline DefaultReturn failed: return type is not default-constructible.");
+                std::terminate();
+            }
         }
 
         void* target_ = nullptr;
@@ -245,10 +271,10 @@ namespace cpp::blackmagic::hook
 
     // Shared implementation for free-function hooks
     template <typename Derived, typename R, typename... Args>
-    class FreeHookBase : public HookRuntime<Derived, R(*)(Args...), R, Args...>
+    class FreeHookBase : public HookPipeline<Derived, R(*)(Args...), R, Args...>
     {
     public:
-        using Base = HookRuntime<Derived, R(*)(Args...), R, Args...>;
+        using Base = HookPipeline<Derived, R(*)(Args...), R, Args...>;
         using Fn = R(*)(Args...);
 
         explicit FreeHookBase(Fn target) : Base(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&Detour)) {}
@@ -261,69 +287,74 @@ namespace cpp::blackmagic::hook
     };
 
     template <typename Derived, typename MemberFn, typename ThisPtr, typename R, typename... Args>
-    class MemberHookBase : public HookRuntime<Derived, MemberOriginalFn<R, ThisPtr, Args...>, R, ThisPtr, Args...> {
+    class MemberHookBase : public HookPipeline<Derived, MemberOriginalFn<R, ThisPtr, Args...>, R, ThisPtr, Args...>
+    {
     public:
         using OrigFn = MemberOriginalFn<R, ThisPtr, Args...>;
-        using Base = HookRuntime<Derived, OrigFn, R, ThisPtr, Args...>;
+        using Base = HookPipeline<Derived, OrigFn, R, ThisPtr, Args...>;
 
         explicit MemberHookBase(MemberFn target)
-            : Base(MemberPointerToAddress(target), reinterpret_cast<void*>(&Detour)) {
+            : Base(MemberPointerToAddress(target), reinterpret_cast<void*>(&Detour))
+        {
         }
 
     private:
-
 #ifdef _CPPBM_HOOK_WIN32
         // x86 thiscall bridge:
         // - ECX carries "this" (thiz)
         // - EDX is an unused placeholder for fastcall compatibility.
-        static R __fastcall Detour(ThisPtr thiz, void* /*edx*/, Args... args) {
+        static R __fastcall Detour(ThisPtr thiz, void* /*edx*/, Args... args)
+        {
             return Base::Dispatch(thiz, args...);
         }
 #else
         // Non-x86 path uses explicit "thiz" parameter directly.
-        static R Detour(ThisPtr thiz, Args... args) {
+        static R Detour(ThisPtr thiz, Args... args)
+        {
             return Base::Dispatch(thiz, args...);
         }
 #endif
     };
 
-
-
     // __stdcall and fastcall for msvc x86
 #ifdef _CPPBM_HOOK_WIN32
 
-        // stdcall
+    // stdcall
     template <typename Derived, typename R, typename... Args>
-    class FreeHookBaseStdcall
-        : public HookRuntime<Derived, R(__stdcall*)(Args...), R, Args...> {
+    class FreeHookBaseStdcall : public HookPipeline<Derived, R(__stdcall*)(Args...), R, Args...>
+    {
     public:
-        using Base = HookRuntime<Derived, R(__stdcall*)(Args...), R, Args...>;
+        using Base = HookPipeline<Derived, R(__stdcall*)(Args...), R, Args...>;
         using Fn = R(__stdcall*)(Args...);
 
         explicit FreeHookBaseStdcall(Fn target)
-            : Base(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&Detour)) {
+            : Base(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&Detour))
+        {
         }
 
     private:
-        static R __stdcall Detour(Args... args) {
+        static R __stdcall Detour(Args... args)
+        {
             return Base::Dispatch(args...);
         }
     };
 
     // fastcall
     template <typename Derived, typename R, typename... Args>
-    class FreeHookBaseFastcall
-        : public HookRuntime<Derived, R(__fastcall*)(Args...), R, Args...> {
+    class FreeHookBaseFastcall : public HookPipeline<Derived, R(__fastcall*)(Args...), R, Args...>
+    {
     public:
-        using Base = HookRuntime<Derived, R(__fastcall*)(Args...), R, Args...>;
+        using Base = HookPipeline<Derived, R(__fastcall*)(Args...), R, Args...>;
         using Fn = R(__fastcall*)(Args...);
 
         explicit FreeHookBaseFastcall(Fn target)
-            : Base(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&Detour)) {
+            : Base(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&Detour))
+        {
         }
 
     private:
-        static R __fastcall Detour(Args... args) {
+        static R __fastcall Detour(Args... args)
+        {
             return Base::Dispatch(args...);
         }
     };
@@ -332,5 +363,4 @@ namespace cpp::blackmagic::hook
 
 }
 
-
-#endif // __CPPBM_HOOK_H__
+#endif // __CPPBM_HOOK_HOOK_H__

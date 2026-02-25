@@ -1,7 +1,7 @@
-#ifndef __CPPBM_NONCOPYABLE_H__
-#define __CPPBM_NONCOPYABLE_H__
+#ifndef __CPPBM_UTILS_NONCOPYABLE_H__
+#define __CPPBM_UTILS_NONCOPYABLE_H__
 
-namespace cpp::blackmagic
+namespace cpp::blackmagic::utils
 {
 	struct NonCopyable
 	{
@@ -17,4 +17,4 @@ namespace cpp::blackmagic
 	};
 }
 
-#endif // __CPPBM_NONCOPYABLE_H__
+#endif // __CPPBM_UTILS_NONCOPYABLE_H__

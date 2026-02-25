@@ -9,12 +9,17 @@ endif ()
 include("${CPPBM_PREPROCESS_CMAKE}")
 
 add_executable(cpp-blackmagic-test 
-    test.h  
-    inlinehook.h
-    main.cpp)
+    src/test.h  
+    #src/inlinehook.h
+    src/main.cpp
 
-# Enable our custom syntax
-CPPBM_ENABLE_PREPROCESS(TARGET cpp-blackmagic-test)
+    #src/router/router.h
+    #src/router/login.cpp
+    )
+
+# Enable custom syntax:
+CPPBM_ENABLE_DECORATOR(TARGET cpp-blackmagic-test)
+CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET cpp-blackmagic-test)
 
 target_include_directories(cpp-blackmagic-test
     PRIVATE

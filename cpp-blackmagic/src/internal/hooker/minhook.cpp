@@ -1,50 +1,49 @@
-// hooker, for windows x86/x86_64
+// minhook hooker, for windows x86/x86_64
 #include <cassert>
-#include <iostream>
 #include <MinHook/MinHook.h>
-#include "cppbm/hooker.h"
+#include "cppbm/internal/hook/hooker.h"
 
-class MinHookHooker : public cpp::blackmagic::Hooker
+class MinHookHooker : public cpp::blackmagic::hook::Hooker
 {
 public:
 	MinHookHooker()
 	{
-		// init minhook
-		assert(MH_Initialize() == MH_OK && "failed to init minhook.");
+		const auto s = MH_Initialize();
+		init_ok_ = (s == MH_OK || s == MH_ERROR_ALREADY_INITIALIZED);
 	}
 
-	~MinHookHooker()
+	~MinHookHooker() override
 	{
-		// uninit minhook
-		assert(MH_Uninitialize() == MH_OK && "failed to uninit minhook.");
+		if (!init_ok_) return;
+		(void)MH_Uninitialize();
 	}
 
 	bool CreateHook(void* target, void* detour, void** origin) override
 	{
-		return MH_CreateHook(target, detour, origin) == MH_OK;
+		return init_ok_ && (MH_CreateHook(target, detour, origin) == MH_OK);
 	}
 
 	bool EnableHook(void* target) override
 	{
-		return MH_EnableHook(target) == MH_OK;
+		return init_ok_ && (MH_EnableHook(target) == MH_OK);
 	}
 
 	bool DisableHook(void* target) override
 	{
-		return MH_DisableHook(target) == MH_OK;
+		return init_ok_ && (MH_DisableHook(target) == MH_OK);
 	}
 
 	bool RemoveHook(void* target) override
 	{
-		return MH_RemoveHook(target) == MH_OK;
+		return init_ok_ && (MH_RemoveHook(target) == MH_OK);
 	}
+
+private:
+	bool init_ok_ = false;
 };
 
-cpp::blackmagic::Hooker* cpp::blackmagic::Hooker::Instance{ nullptr };
-
-cpp::blackmagic::Hooker* cpp::blackmagic::Hooker::GetInstance()
+cpp::blackmagic::hook::Hooker& cpp::blackmagic::hook::Hooker::GetInstance()
 {
-	static MinHookHooker hooker_impl{};
-	Instance = &hooker_impl;
-	return Instance;
+	static MinHookHooker instance{};
+	return instance;
 }

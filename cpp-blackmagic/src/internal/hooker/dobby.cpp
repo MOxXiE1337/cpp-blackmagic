@@ -1,11 +1,10 @@
-// dobby hooker, for linux x86/x86_64, andorid x86/x86_64/arm32/arm64
+// dobby hooker, for linux x86/x86_64/arm/arm64, andorid x86/x86_64/arm/arm64
 #include <cassert>
-#include <iostream>
 #include <Dobby/Dobby.h>
 
-#include "cppbm/hooker.h"
+#include "cppbm/internal/hook/hooker.h"
 
-class DobbyHooker : public cpp::blackmagic::Hooker
+class DobbyHooker : public cpp::blackmagic::hook::Hooker
 {
 public:
 	bool CreateHook(void* target, void* detour, void** origin) override
@@ -13,11 +12,13 @@ public:
 		return DobbyHook(target, detour, origin) == 0;
 	}
 
+	// Dobby backend doesn't have enable hook design
 	bool EnableHook(void* target) override
 	{
 		return true;
 	}
 
+	// Dobby backend doesn't have disable hook design
 	bool DisableHook(void* target) override
 	{
 		return true;
@@ -29,11 +30,8 @@ public:
 	}
 };
 
-cpp::blackmagic::Hooker* cpp::blackmagic::Hooker::Instance{ nullptr };
-
-cpp::blackmagic::Hooker* cpp::blackmagic::Hooker::GetInstance()
+cpp::blackmagic::hook::Hooker& cpp::blackmagic::hook::Hooker::GetInstance()
 {
-	static DobbyHooker hooker_impl{};
-	Instance = &hooker_impl;
-	return Instance;
+	static DobbyHooker instance{};
+	return instance;
 }

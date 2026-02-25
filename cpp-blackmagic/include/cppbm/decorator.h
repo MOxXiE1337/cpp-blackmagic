@@ -1,163 +1,144 @@
-#include "hook.h"
-
 #ifndef __CPPBM_DECORATOR_H__
 #define __CPPBM_DECORATOR_H__
 
+#include <concepts>
+#include <tuple>
+#include <type_traits>
+
+#include "internal/hook/error.h"
+#include "internal/hook/hook.h"
+
 namespace cpp::blackmagic
 {
-    // Decorators 
-    template <typename Func, typename... Args>
-    class Decorator;
-
-    // Free-function specialization.
-    template <typename R, typename... RealArgs, typename... DeclaredArgs>
-    class Decorator<R(*)(RealArgs...), DeclaredArgs...> : public hook::FreeHookBase<
-        Decorator<R(*)(RealArgs...), DeclaredArgs...>,
-        R,
-        RealArgs...>
+    namespace impl
     {
-    public:
-        using Self = Decorator<R(*)(RealArgs...), DeclaredArgs...>;
-        using Base = hook::FreeHookBase<Self, R, RealArgs...>;
+        // Decorators
+        template <typename Func, typename... Args>
+        class Decorator;
 
-        static_assert(
-            sizeof...(DeclaredArgs) == 0 ||
-            std::is_same_v<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>,
-            "If Args... is provided, it must exactly match Func argument list.");
+        // Useful concepts
+        template <typename DeclaredTuple, typename RealTuple>
+        concept ArgsCompatible =
+            std::same_as<DeclaredTuple, std::tuple<>> ||
+            std::same_as<DeclaredTuple, RealTuple>;
 
-        using Base::Base;
-        using Base::BeforeCall;
-        using Base::Call;
-        using Base::AfterCall;
-        using Base::CallOriginal;
-        using Base::Install;
-        using Base::Uninstall;
-        using Base::IsInstalled;
-    };
+        template <typename T>
+        concept FreeFunctionPointer =
+            std::is_pointer_v<std::remove_cvref_t<T>> &&
+            std::is_function_v<std::remove_pointer_t<std::remove_cvref_t<T>>>;
 
-// __stdcall and fastcall for msvc x86
+        template <typename T>
+        concept MemberFunctionPointer =
+            std::is_member_function_pointer_v<std::remove_cvref_t<T>>;
+
+        template <auto Target>
+        concept DecoratorTarget =
+            MemberFunctionPointer<decltype(Target)> ||
+            FreeFunctionPointer<decltype(Target)>;
+
+        // Free-function specialization.
+        template <typename R, typename... RealArgs, typename... DeclaredArgs>
+            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
+        class Decorator<R(*)(RealArgs...), DeclaredArgs...>
+            : public hook::FreeHookBase<Decorator<R(*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>
+        {
+        public:
+            using Base = hook::FreeHookBase<Decorator<R(*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>;
+            using Base::Base;
+        };
+
+        // __stdcall and fastcall for msvc x86
 #ifdef _CPPBM_HOOK_WIN32
-    // __stdcall
-    template <typename R, typename... RealArgs, typename... DeclaredArgs>
-    class Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...> : public hook::FreeHookBaseStdcall<
-        Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>,
-        R,
-        RealArgs...>
-    {
-    public:
-        using Self = Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>;
-        using Base = hook::FreeHookBaseStdcall<Self, R, RealArgs...>;
+        // __stdcall
+        template <typename R, typename... RealArgs, typename... DeclaredArgs>
+            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
+        class Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>
+            : public hook::FreeHookBaseStdcall<Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>
+        {
+        public:
+            using Base = hook::FreeHookBaseStdcall<Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>;
+            using Base::Base;
+        };
 
-        static_assert(
-            sizeof...(DeclaredArgs) == 0 ||
-            std::is_same_v<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>,
-            "If Args... is provided, it must exactly match Func argument list.");
-
-        using Base::Base;
-        using Base::BeforeCall;
-        using Base::Call;
-        using Base::AfterCall;
-        using Base::CallOriginal;
-        using Base::Install;
-        using Base::Uninstall;
-        using Base::IsInstalled;
-    };
-
-    // __fastcall
-    template <typename R, typename... RealArgs, typename... DeclaredArgs>
-    class Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...> : public hook::FreeHookBaseFastcall<
-        Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>,
-        R,
-        RealArgs...>
-    {
-    public:
-        using Self = Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>;
-        using Base = hook::FreeHookBaseFastcall<Self, R, RealArgs...>;
-
-        static_assert(
-            sizeof...(DeclaredArgs) == 0 ||
-            std::is_same_v<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>,
-            "If Args... is provided, it must exactly match Func argument list.");
-
-        using Base::Base;
-        using Base::BeforeCall;
-        using Base::Call;
-        using Base::AfterCall;
-        using Base::CallOriginal;
-        using Base::Install;
-        using Base::Uninstall;
-        using Base::IsInstalled;
-    };
+        // __fastcall
+        template <typename R, typename... RealArgs, typename... DeclaredArgs>
+            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
+        class Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>
+            : public hook::FreeHookBaseFastcall<Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>
+        {
+        public:
+            using Base = hook::FreeHookBaseFastcall<Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>;
+            using Base::Base;
+        };
 
 #endif // _CPPBM_HOOK_WIN32
 
-    // Non-const member-function specialization.
-    template <typename C, typename R, typename... RealArgs, typename... DeclaredArgs>
-    class Decorator<R(C::*)(RealArgs...), DeclaredArgs...>
-        : public hook::MemberHookBase<
-        Decorator<R(C::*)(RealArgs...), DeclaredArgs...>,
-        R(C::*)(RealArgs...),
-        C*,
-        R,
-        RealArgs...> {
-    public:
-        using Self = Decorator<R(C::*)(RealArgs...), DeclaredArgs...>;
-        using Base = hook::MemberHookBase<Self, R(C::*)(RealArgs...), C*, R, RealArgs...>;
+        // Non-const member-function specialization.
+        template <typename C, typename R, typename... RealArgs, typename... DeclaredArgs>
+            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
+        class Decorator<R(C::*)(RealArgs...), DeclaredArgs...>
+            : public hook::MemberHookBase<
+            Decorator<R(C::*)(RealArgs...), DeclaredArgs...>,
+            R(C::*)(RealArgs...),
+            C*,
+            R,
+            RealArgs...>
+        {
+        public:
+            using Base = hook::MemberHookBase<
+                Decorator<R(C::*)(RealArgs...), DeclaredArgs...>,
+                R(C::*)(RealArgs...),
+                C*,
+                R,
+                RealArgs...>;
+            using Base::Base;
+        };
 
-        static_assert(
-            sizeof...(DeclaredArgs) == 0 ||
-            std::is_same_v<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>,
-            "If Args... is provided, it must exactly match Func argument list.");
+        // Const member-function specialization.
+        template <typename C, typename R, typename... RealArgs, typename... DeclaredArgs>
+            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
+        class Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>
+            : public hook::MemberHookBase<
+            Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>,
+            R(C::*)(RealArgs...) const,
+            const C*,
+            R,
+            RealArgs...>
+        {
+        public:
+            using Base = hook::MemberHookBase<
+                Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>,
+                R(C::*)(RealArgs...) const,
+                const C*,
+                R,
+                RealArgs...>;
+            using Base::Base;
+        };
+    }
 
-        using Base::Base;
-        using Base::BeforeCall;
-        using Base::Call;
-        using Base::AfterCall;
-        using Base::CallOriginal;
-        using Base::Install;
-        using Base::Uninstall;
-        using Base::IsInstalled;
-    };
-
-    // Const member-function specialization.
-    template <typename C, typename R, typename... RealArgs, typename... DeclaredArgs>
-    class Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>
-        : public hook::MemberHookBase<
-        Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>,
-        R(C::*)(RealArgs...) const,
-        const C*,
-        R,
-        RealArgs...> {
-    public:
-        using Self = Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>;
-        using Base = hook::MemberHookBase<Self, R(C::*)(RealArgs...) const, const C*, R, RealArgs...>;
-
-        static_assert(
-            sizeof...(DeclaredArgs) == 0 ||
-            std::is_same_v<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>,
-            "If Args... is provided, it must exactly match Func argument list.");
-
-        using Base::Base;
-        using Base::BeforeCall;
-        using Base::Call;
-        using Base::AfterCall;
-        using Base::CallOriginal;
-        using Base::Install;
-        using Base::Uninstall;
-        using Base::IsInstalled;
-    };
-
-    // Helper classes, not fully tested
+    // Auto decorator
+    // Can be used like decorator(@xxx)
     template <auto Target>
-    class AutoDecorator : public Decorator<decltype(Target)>
+        requires impl::DecoratorTarget<Target>
+    class FunctionDecorator
+        : public impl::Decorator<decltype(Target)>
     {
     public:
         using Fn = decltype(Target);
-      
-        AutoDecorator() : Decorator<Fn>(Target) {}
-        explicit AutoDecorator(Fn /*unused*/) : Decorator<Fn>(Target) {}
+        using Base = impl::Decorator<Fn>;
+        static constexpr Fn kTarget = Target;
+
+        FunctionDecorator() : Base(kTarget)
+        {
+            (void)this->Install();
+        }
+
+        explicit FunctionDecorator(Fn /*unused*/) : Base(kTarget)
+        {
+            (void)this->Install();
+        }
     };
-} 
+}
 
 #endif // __CPPBM_DECORATOR_H__
 
