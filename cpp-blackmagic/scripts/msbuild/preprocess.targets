@@ -13,38 +13,73 @@
     <DisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'=='true'">true</DisableFastUpToDateCheck>
   </PropertyGroup>
 
-  <Target Name="CppbmPreprocess"
-          BeforeTargets="ClCompile">
+  <Target Name="CppbmCollectInputs">
     <Error Condition="!Exists('$(CppbmDecoratorScript)')" Text="[cpp-blackmagic] decorator.py not found: $(CppbmDecoratorScript)" />
     <Error Condition="!Exists('$(CppbmInjectScript)')" Text="[cpp-blackmagic] inject.py not found: $(CppbmInjectScript)" />
 
     <!-- Build-scoped input selection: keep only C/C++ sources and exclude generated files. -->
     <ItemGroup>
-      <CppbmInput Include="@(ClCompile)" />
+      <CppbmInput Include="@(ClCompile)">
+        <CppbmSourceDir>$(ProjectDir)%(RelativeDir)</CppbmSourceDir>
+        <CppbmDecorOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.decor.cpp'))</CppbmDecorOut>
+        <CppbmGenOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.gen.cpp'))</CppbmGenOut>
+      </CppbmInput>
       <CppbmInput Remove="**\*.cppbm.decor.cpp;**\*.cppbm.gen.cpp" />
+      <!-- Keep header units on the native MSBuild path; only preprocess implementation files. -->
+      <CppbmInput Remove="**\*.h;**\*.hh;**\*.hpp;**\*.hxx;**\*.ixx" />
     </ItemGroup>
 
     <MakeDir Directories="@(CppbmInput->'$(IntDir)cppbm\%(RelativeDir)')" />
+  </Target>
 
+  <Target Name="CppbmDecorate"
+          DependsOnTargets="CppbmCollectInputs"
+          Inputs="@(CppbmInput)"
+          Outputs="@(CppbmInput->'%(CppbmDecorOut)')">
     <!-- Pass 1: decorator.py -->
-    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmDecoratorScript)&quot; --in &quot;%(CppbmInput.FullPath)&quot; --out &quot;$(IntDir)cppbm\%(CppbmInput.RelativeDir)%(CppbmInput.Filename).cppbm.decor.cpp&quot; $(CppbmStrictArg)"
-          StandardOutputImportance="Normal"
-          StandardErrorImportance="High" />
-
-    <!-- Pass 2: inject.py -->
-    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmInjectScript)&quot; --in &quot;$(IntDir)cppbm\%(CppbmInput.RelativeDir)%(CppbmInput.Filename).cppbm.decor.cpp&quot; --out &quot;$(IntDir)cppbm\%(CppbmInput.RelativeDir)%(CppbmInput.Filename).cppbm.gen.cpp&quot; $(CppbmStrictArg)"
+    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmDecoratorScript)&quot; --in &quot;%(CppbmInput.FullPath)&quot; --out &quot;%(CppbmInput.CppbmDecorOut)&quot; $(CppbmStrictArg)"
           StandardOutputImportance="Normal"
           StandardErrorImportance="High" />
   </Target>
 
+  <Target Name="CppbmInject"
+          DependsOnTargets="CppbmDecorate"
+          Inputs="@(CppbmInput->'%(CppbmDecorOut)')"
+          Outputs="@(CppbmInput->'%(CppbmGenOut)')">
+    <!-- Pass 2: inject.py -->
+    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmInjectScript)&quot; --in &quot;%(CppbmInput.CppbmDecorOut)&quot; --out &quot;%(CppbmInput.CppbmGenOut)&quot; $(CppbmStrictArg)"
+          StandardOutputImportance="Normal"
+          StandardErrorImportance="High" />
+  </Target>
+
+  <Target Name="CppbmPreprocess"
+          BeforeTargets="ClCompile"
+          DependsOnTargets="CppbmInject" />
+
   <!-- Must run even when preprocess target is up-to-date, so compile inputs are consistently swapped. -->
   <Target Name="CppbmSwapCompileInputs" BeforeTargets="ClCompile" DependsOnTargets="CppbmPreprocess">
     <ItemGroup>
-      <CppbmInput Include="@(ClCompile)" />
+      <CppbmInput Include="@(ClCompile)">
+        <CppbmSourceDir>$(ProjectDir)%(RelativeDir)</CppbmSourceDir>
+        <CppbmGenOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.gen.cpp'))</CppbmGenOut>
+      </CppbmInput>
       <CppbmInput Remove="**\*.cppbm.decor.cpp;**\*.cppbm.gen.cpp" />
+      <CppbmInput Remove="**\*.h;**\*.hh;**\*.hpp;**\*.hxx;**\*.ixx" />
+      <_CppbmGeneratedCompile Include="@(CppbmInput->'%(CppbmGenOut)')">
+        <CppbmSourceDir>%(CppbmInput.CppbmSourceDir)</CppbmSourceDir>
+        <CppbmInheritedIncludeDirs>%(CppbmInput.AdditionalIncludeDirectories)</CppbmInheritedIncludeDirs>
+      </_CppbmGeneratedCompile>
+    </ItemGroup>
+
+    <RemoveDuplicates Inputs="@(_CppbmGeneratedCompile)">
+      <Output TaskParameter="Filtered" ItemName="_CppbmGeneratedCompileUnique" />
+    </RemoveDuplicates>
+
+    <ItemGroup>
       <ClCompile Remove="@(CppbmInput)" />
-      <ClCompile Include="@(CppbmInput->'$(IntDir)cppbm\%(RelativeDir)%(Filename).cppbm.gen.cpp')">
+      <ClCompile Include="@(_CppbmGeneratedCompileUnique)">
         <CppbmGenerated>true</CppbmGenerated>
+        <AdditionalIncludeDirectories>%(_CppbmGeneratedCompileUnique.CppbmSourceDir);%(_CppbmGeneratedCompileUnique.CppbmInheritedIncludeDirs)</AdditionalIncludeDirectories>
       </ClCompile>
     </ItemGroup>
   </Target>

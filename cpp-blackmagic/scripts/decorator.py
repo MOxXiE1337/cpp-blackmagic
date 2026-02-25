@@ -87,8 +87,15 @@ def write_text_auto(path: Path, text: str, codec: str, bom: bytes) -> None:
         encoded = text.encode(codec)
     except UnicodeEncodeError as e:
         raise RuntimeError(f"Failed to encode output file '{path}' with codec '{codec}'.") from e
+    payload = bom + encoded
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(bom + encoded)
+    if path.exists():
+        try:
+            if path.read_bytes() == payload:
+                return
+        except OSError:
+            pass
+    path.write_bytes(payload)
 
 def build_cpp_language():
     candidates = []
