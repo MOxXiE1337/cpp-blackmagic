@@ -13,8 +13,8 @@ Main capabilities:
 Current status is closer to an engineering prototype than a production-ready general-purpose library.
 
 ## Docs
-- `cpp-blackmagic/docs/decorator.md`
-- `cpp-blackmagic/docs/depends.md`
+- [decorator](cpp-blackmagic/docs/decorator.md)
+- [depends](cpp-blackmagic/docs/depends.md)
 
 ## Repository Layout
 - `cpp-blackmagic/include/cppbm/decorator.h`: public decorator entry API

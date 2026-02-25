@@ -12,7 +12,7 @@ endif()
 project ("cpp-blackmagic")
 
 option(BUILD_WINDOWS_X86 "Build Win32 (x86) variant." OFF)
-option(BUILD_WINDOWS_X86_64 "Build Win64 (x64) variant." ON)
+option(BUILD_WINDOWS_X86_64 "Build Win64 (x64) variant." OFF)
 
 option(BUILD_LINUX_X86 "Build Linux (x86) variant." OFF)
 option(BUILD_LINUX_X86_64 "Build Linux (x86_64) variant." OFF)
