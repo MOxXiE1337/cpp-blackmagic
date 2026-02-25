@@ -11,6 +11,8 @@ endif()
 
 project ("cpp-blackmagic")
 
+option(BUILD_EXAMPLES "Build cpp-blackmagic examples." ON)
+
 option(BUILD_WINDOWS_X86 "Build Win32 (x86) variant." OFF)
 option(BUILD_WINDOWS_X86_64 "Build Win64 (x64) variant." OFF)
 
@@ -25,4 +27,7 @@ option(BUILD_ANDROID_ARM "Build Android (arm32) variant." OFF)
 option(BUILD_ANDROID_ARM64 "Build Android (arm64) variant." OFF)
 
 add_subdirectory(cpp-blackmagic)
-add_subdirectory(test)
+
+if (BUILD_EXAMPLES)
+  add_subdirectory(cpp-blackmagic/examples)
+endif ()

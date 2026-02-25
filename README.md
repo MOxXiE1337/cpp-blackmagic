@@ -26,7 +26,9 @@ Current status is closer to an engineering prototype than a production-ready gen
 - `cpp-blackmagic/scripts/decorator.py`: preprocess for `decorator(...)`
 - `cpp-blackmagic/scripts/inject.py`: preprocess for `@inject` default-arg metadata
 - `cpp-blackmagic/scripts/cmake/preprocess.cmake`: CMake integration helpers
-- `test/src/main.cpp`: example executable source
+- `cpp-blackmagic/examples/src/decorator_example.cpp`: decorator + class decorator example
+- `cpp-blackmagic/examples/src/depends_example.cpp`: `@inject` + `Depends(...)` example
+- `cpp-blackmagic/tests/src/smoke_test.cpp`: optional smoke test target
 - `cpp-blackmagic/docs/decorator.md`: decorator deep dive
 - `cpp-blackmagic/docs/depends.md`: depends/inject deep dive
 
@@ -48,11 +50,16 @@ pip install tree_sitter tree_sitter_cpp tree_sitter_languages
 ## Build
 
 ```bash
-mkdir build
-cd build
-cmake -DBUILD_LINUX_X86_64=ON ..
-make
+cmake -S . -B build \
+  -DBUILD_LINUX_X86_64=ON \
+  -DBUILD_EXAMPLES=ON \
+  -DBUILD_TESTS=OFF
+cmake --build build
 ```
+
+Options:
+- `BUILD_EXAMPLES` (default `ON`): build example executables under `cpp-blackmagic/examples`.
+- `BUILD_TESTS` (default `OFF`): build smoke test executable under `cpp-blackmagic/tests`.
 
 ## Enable In Your Target
 In your own `CMakeLists.txt`:
@@ -82,10 +89,14 @@ set(CPPBM_PREPROCESS_STRICT_PARSER ON)
 This option is defined in `cpp-blackmagic/scripts/cmake/preprocess.cmake`.
 
 ## Example Coverage
-`test/src/main.cpp` demonstrates:
-- `decorator(@logger)` for free functions
-- `decorator(@inject)` with `Depends(...)`
-- `ScopeOverrideDependency<&target>(...)` scoped override
+`cpp-blackmagic/examples` provides:
+- `cppbm-example-decorator`:
+  - symbol decorator: `decorator(@add_one)`
+  - class decorator: `decorator(@router.get("/health"))`
+- `cppbm-example-depends`:
+  - `decorator(@inject)` with `Depends(factory)`
+  - target-scoped override: `ScopeOverrideDependency<&Target>(...)`
+  - global override: `ScopeOverrideDependency(...)`
 
 ## Class Decorator Example (Router + RouteBinder)
 `decorator.py` supports class decorator syntax like:

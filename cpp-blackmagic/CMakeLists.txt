@@ -8,9 +8,6 @@ add_library(cpp-blackmagic STATIC
     include/cppbm/internal/hook/error.h
     include/cppbm/internal/hook/hook.h
 
-    #include/cppbm/depends_registry.h
-    #include/cppbm/depends_context.h
-    #include/cppbm/depends.h
     include/cppbm/internal/depends/factory_invoke.h
     include/cppbm/internal/depends/placeholder.h
     include/cppbm/internal/depends/registry.h
