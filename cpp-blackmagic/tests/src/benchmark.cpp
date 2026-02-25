@@ -71,7 +71,10 @@ std::vector<long long> prime_factorization(long long n)
 void BenchmarkCore(long long n, Config* cfg)
 {
     const auto factors = prime_factorization(n);
-    g_sink += factors.size();
+    // GCC C++20 warns on compound assignment with volatile lvalue.
+    // Keep volatile sink semantics while using explicit load/store.
+    const std::size_t sink_snapshot = g_sink;
+    g_sink = sink_snapshot + factors.size();
 
     if (cfg != nullptr && !factors.empty())
     {

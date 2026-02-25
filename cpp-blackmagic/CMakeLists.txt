@@ -16,6 +16,11 @@ add_library(cpp-blackmagic STATIC
     include/cppbm/internal/depends/meta.h
     include/cppbm/internal/depends/context.h
     include/cppbm/internal/depends/resolve.h
+    include/cppbm/internal/depends/resolve_sync.h
+    include/cppbm/internal/depends/resolve_async.h
+    include/cppbm/internal/depends/inject_sync.h
+    include/cppbm/internal/depends/inject_async.h
+    include/cppbm/internal/depends/inject.h
     include/cppbm/internal/depends/maker.h
 
     include/cppbm/decorator.h
