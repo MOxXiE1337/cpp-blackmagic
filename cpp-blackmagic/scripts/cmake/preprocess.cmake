@@ -3,6 +3,15 @@ include_guard(GLOBAL)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 option(CPPBM_PREPROCESS_STRICT_PARSER "Fail preprocess when tree_sitter parser is unavailable or parse fails." OFF)
 
+# Keep a stable Python executable across subdirectories/targets.
+if(NOT DEFINED CPPBM_PYTHON_EXECUTABLE OR CPPBM_PYTHON_EXECUTABLE STREQUAL "")
+	set(CPPBM_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "Python interpreter for cpp-blackmagic preprocess scripts")
+endif()
+
+if(NOT CPPBM_PYTHON_EXECUTABLE)
+	message(FATAL_ERROR "CPPBM preprocess requires Python interpreter, but CPPBM_PYTHON_EXECUTABLE is empty.")
+endif()
+
 function(_CPPBM_GET_RELATIVE_SOURCE_PATH ABS TARGET OUT_REL)
 	file(TO_CMAKE_PATH "${ABS}" ABS_NORM)
 	file(TO_CMAKE_PATH "${CMAKE_BINARY_DIR}" BIN_NORM)
@@ -71,7 +80,7 @@ function(CPPBM_ENABLE_DECORATOR)
 
 			add_custom_command(
 				OUTPUT "${OUT}"
-				COMMAND ${Python3_EXECUTABLE} "${DECORATOR_SCRIPT}"
+				COMMAND "${CPPBM_PYTHON_EXECUTABLE}" "${DECORATOR_SCRIPT}"
 					--in "${ABS}"
 					--out "${OUT}"
 					${DECORATOR_EXTRA_ARGS}
@@ -128,7 +137,7 @@ function(CPPBM_ENABLE_DEPENDENCY_INJECT)
 		if(EXT MATCHES "^\\.(cc|cpp|cxx|h|hpp|hxx)$")
 			list(APPEND INJECT_INPUTS "${ABS}")
 			list(APPEND INJECT_COMMANDS
-				COMMAND ${Python3_EXECUTABLE} "${INJECT_SCRIPT}" --in "${ABS}" --out "${ABS}" ${INJECT_EXTRA_ARGS})
+				COMMAND "${CPPBM_PYTHON_EXECUTABLE}" "${INJECT_SCRIPT}" --in "${ABS}" --out "${ABS}" ${INJECT_EXTRA_ARGS})
 		endif()
 	endforeach()
 

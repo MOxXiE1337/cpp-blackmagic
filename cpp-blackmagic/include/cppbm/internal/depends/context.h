@@ -85,6 +85,16 @@ namespace cpp::blackmagic::depends
         }
     };
 
+    inline void ResetInjectContextState(InjectContextState& state)
+    {
+        state.root.parent = nullptr;
+        state.root.slots.clear();
+        state.context_stack.clear();
+        state.context_stack.push_back(&state.root);
+        state.execute_depends_depth = 0;
+        state.inject_call_depth = 0;
+    }
+
     // Per-thread ambient state fallback.
     // This preserves legacy behavior when no coroutine/context binding is active.
     inline std::shared_ptr<InjectContextState> GetAmbientStateOwner()
@@ -200,13 +210,12 @@ namespace cpp::blackmagic::depends
     public:
         InjectContextLease(std::shared_ptr<InjectContextState> state, bool track_inject_call_depth)
             : state_(state ? std::move(state) : std::make_shared<InjectContextState>()),
-            local_(std::make_unique<InjectContext>()),
             track_inject_call_depth_(track_inject_call_depth)
         {
             auto& stack = state_->context_stack;
             assert(!stack.empty() && "InjectContextState stack should never be empty.");
-            local_->parent = stack.back();
-            stack.push_back(local_.get());
+            local_.parent = stack.back();
+            stack.push_back(&local_);
             if (track_inject_call_depth_)
             {
                 ++state_->inject_call_depth;
@@ -215,7 +224,7 @@ namespace cpp::blackmagic::depends
 
         ~InjectContextLease()
         {
-            if (!active_)
+            if (!active_ || !state_)
             {
                 return;
             }
@@ -226,7 +235,7 @@ namespace cpp::blackmagic::depends
             // to avoid leaving dangling InjectContext* in stack.
             if (!stack.empty())
             {
-                auto it = std::find(stack.begin(), stack.end(), local_.get());
+                auto it = std::find(stack.begin(), stack.end(), &local_);
                 if (it != stack.end())
                 {
                     stack.erase(it);
@@ -257,7 +266,25 @@ namespace cpp::blackmagic::depends
             track_inject_call_depth_(rhs.track_inject_call_depth_),
             active_(rhs.active_)
         {
+            if (active_ && state_)
+            {
+                auto& stack = state_->context_stack;
+                auto it = std::find(stack.begin(), stack.end(), &rhs.local_);
+                if (it != stack.end())
+                {
+                    *it = &local_;
+                }
+
+                for (InjectContext* ctx : stack)
+                {
+                    if (ctx != nullptr && ctx->parent == &rhs.local_)
+                    {
+                        ctx->parent = &local_;
+                    }
+                }
+            }
             rhs.active_ = false;
+            rhs.local_.parent = nullptr;
         }
 
         InjectContextLease& operator=(InjectContextLease&& rhs) noexcept = delete;
@@ -269,7 +296,7 @@ namespace cpp::blackmagic::depends
 
     private:
         std::shared_ptr<InjectContextState> state_{};
-        std::unique_ptr<InjectContext> local_{};
+        InjectContext local_{};
         bool track_inject_call_depth_ = false;
         bool active_ = true;
     };
@@ -313,15 +340,37 @@ namespace cpp::blackmagic::depends
         return GetActiveStateOwner();
     }
 
-    inline InjectContextLease AcquireInjectCallLease()
+    inline std::shared_ptr<InjectContextState> AcquireReusableTopLevelInjectStateOwner()
+    {
+        // Reuse one isolated top-level state per thread to avoid allocating
+        // a fresh state owner on every synchronous @inject call.
+        static thread_local std::shared_ptr<InjectContextState> reusable =
+            std::make_shared<InjectContextState>();
+
+        if (!reusable || reusable.use_count() != 1)
+        {
+            return std::make_shared<InjectContextState>();
+        }
+
+        ResetInjectContextState(*reusable);
+        return reusable;
+    }
+
+    inline std::shared_ptr<InjectContextState> AcquireInjectCallStateOwner()
     {
         auto state = GetActiveStateOwner();
         if (!state || state->inject_call_depth <= 0)
         {
             // Top-level @inject call (not inside another @inject scope):
             // use isolated state root so sibling requests do not share caches.
-            state = std::make_shared<InjectContextState>();
+            state = AcquireReusableTopLevelInjectStateOwner();
         }
+        return state;
+    }
+
+    inline InjectContextLease AcquireInjectCallLease()
+    {
+        auto state = AcquireInjectCallStateOwner();
         // Nested @inject call reuses existing state and pushes one child context frame.
         return InjectContextLease{ std::move(state), true };
     }
@@ -394,38 +443,38 @@ namespace cpp::blackmagic::depends
             static_assert(!std::is_reference_v<R>,
                 "AutoBindInjectContext expects non-reference return types.");
 
-            // Keep a copyable handle so adapters that do not support move-only lease
-            // can still capture it in task objects.
-            auto lease_handle = MakeInjectContextLeaseHandle(std::move(lease));
-
             if constexpr (HasMemberBindInjectContext<V>)
             {
                 V out = std::forward<R>(value);
-                out.BindInjectContext(std::move(*lease_handle));
+                out.BindInjectContext(std::move(lease));
                 return out;
             }
             else if constexpr (HasMemberBindInjectContextHandle<V>)
             {
+                auto lease_handle = MakeInjectContextLeaseHandle(std::move(lease));
                 V out = std::forward<R>(value);
                 out.BindInjectContext(lease_handle);
                 return out;
             }
             else if constexpr (HasMemberSetInjectContextHandle<V>)
             {
+                auto lease_handle = MakeInjectContextLeaseHandle(std::move(lease));
                 V out = std::forward<R>(value);
                 out.SetInjectContext(lease_handle);
                 return out;
             }
             else if constexpr (HasAdlBindInjectContext<R>)
             {
-                return BindInjectContext(std::forward<R>(value), std::move(*lease_handle));
+                return BindInjectContext(std::forward<R>(value), std::move(lease));
             }
             else if constexpr (HasAdlBindInjectContextHandle<R>)
             {
+                auto lease_handle = MakeInjectContextLeaseHandle(std::move(lease));
                 return BindInjectContext(std::forward<R>(value), lease_handle);
             }
             else if constexpr (HasAdlSetInjectContextHandle<R>)
             {
+                auto lease_handle = MakeInjectContextLeaseHandle(std::move(lease));
                 return SetInjectContext(std::forward<R>(value), lease_handle);
             }
             else
@@ -433,6 +482,7 @@ namespace cpp::blackmagic::depends
                 // No adapter found:
                 // returning value as-is keeps backward compatibility for sync return types.
                 // For coroutine return types, user should implement one supported adapter.
+                (void)lease;
                 return std::forward<R>(value);
             }
         }

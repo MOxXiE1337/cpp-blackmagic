@@ -23,6 +23,7 @@
 #ifndef __CPPBM_DEPENDS_REGISTRY_H__
 #define __CPPBM_DEPENDS_REGISTRY_H__
 
+#include <atomic>
 #include <any>
 #include <array>
 #include <cstddef>
@@ -37,6 +38,12 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+#define CPPBM_HAS_ATOMIC_SHARED_PTR 1
+#else
+#define CPPBM_HAS_ATOMIC_SHARED_PTR 0
+#endif
 
 namespace cpp::blackmagic::depends
 {
@@ -118,12 +125,26 @@ namespace cpp::blackmagic::depends
     {
     public:
         using StoredAny = std::shared_ptr<const std::any>;
+        using Table = std::unordered_map<ExplicitValueKey, StoredAny, ExplicitValueKeyHash>;
+#if CPPBM_HAS_ATOMIC_SHARED_PTR
+        using SnapshotStorage = std::atomic<std::shared_ptr<const Table>>;
+#else
+        using SnapshotStorage = std::shared_ptr<const Table>;
+#endif
+
+        ExplicitValueRegistry()
+        {
+            StoreSnapshot(std::make_shared<const Table>());
+        }
 
         bool Register(const void* target, const void* factory, std::type_index type, std::any value)
         {
             auto stored = std::make_shared<const std::any>(std::move(value));
-            std::unique_lock<std::shared_mutex> lock{ mtx_ };
-            table_[ExplicitValueKey{ target, factory, type }] = std::move(stored);
+            std::lock_guard<std::mutex> lock{ write_mtx_ };
+            auto base = LoadSnapshot();
+            auto next = std::make_shared<Table>(base ? *base : Table{});
+            (*next)[ExplicitValueKey{ target, factory, type }] = std::move(stored);
+            StoreSnapshot(std::static_pointer_cast<const Table>(next));
             return true;
         }
 
@@ -132,12 +153,16 @@ namespace cpp::blackmagic::depends
             const void* factory,
             std::type_index type) const
         {
-            std::shared_lock<std::shared_mutex> lock{ mtx_ };
+            auto snapshot = LoadSnapshot();
+            if (!snapshot)
+            {
+                return std::nullopt;
+            }
 
             const auto fetch_at = [&](const void* key_target, const void* key_factory) -> std::optional<StoredAny>
                 {
-                    auto it = table_.find(ExplicitValueKey{ key_target, key_factory, type });
-                    if (it == table_.end())
+                    auto it = snapshot->find(ExplicitValueKey{ key_target, key_factory, type });
+                    if (it == snapshot->end())
                     {
                         return std::nullopt;
                     }
@@ -169,9 +194,13 @@ namespace cpp::blackmagic::depends
             const void* factory,
             std::type_index type) const
         {
-            std::shared_lock<std::shared_mutex> lock{ mtx_ };
-            auto it = table_.find(ExplicitValueKey{ target, factory, type });
-            if (it == table_.end())
+            auto snapshot = LoadSnapshot();
+            if (!snapshot)
+            {
+                return std::nullopt;
+            }
+            auto it = snapshot->find(ExplicitValueKey{ target, factory, type });
+            if (it == snapshot->end())
             {
                 return std::nullopt;
             }
@@ -180,27 +209,49 @@ namespace cpp::blackmagic::depends
 
         bool Remove(const void* target, const void* factory, std::type_index type)
         {
-            std::unique_lock<std::shared_mutex> lock{ mtx_ };
-            return table_.erase(ExplicitValueKey{ target, factory, type }) > 0;
+            std::lock_guard<std::mutex> lock{ write_mtx_ };
+            auto base = LoadSnapshot();
+            if (!base)
+            {
+                return false;
+            }
+            auto next = std::make_shared<Table>(*base);
+            const bool removed = next->erase(ExplicitValueKey{ target, factory, type }) > 0;
+            if (removed)
+            {
+                StoreSnapshot(std::static_pointer_cast<const Table>(next));
+            }
+            return removed;
         }
 
         std::size_t Clear()
         {
-            std::unique_lock<std::shared_mutex> lock{ mtx_ };
-            const std::size_t removed = table_.size();
-            table_.clear();
+            std::lock_guard<std::mutex> lock{ write_mtx_ };
+            auto base = LoadSnapshot();
+            const std::size_t removed = base ? base->size() : 0;
+            if (removed == 0)
+            {
+                return 0;
+            }
+            StoreSnapshot(std::make_shared<const Table>());
             return removed;
         }
 
         std::size_t ClearForTarget(const void* target)
         {
-            std::unique_lock<std::shared_mutex> lock{ mtx_ };
+            std::lock_guard<std::mutex> lock{ write_mtx_ };
+            auto base = LoadSnapshot();
+            if (!base || base->empty())
+            {
+                return 0;
+            }
+            auto next = std::make_shared<Table>(*base);
             std::size_t removed = 0;
-            for (auto it = table_.begin(); it != table_.end(); )
+            for (auto it = next->begin(); it != next->end(); )
             {
                 if (it->first.target == target)
                 {
-                    it = table_.erase(it);
+                    it = next->erase(it);
                     ++removed;
                 }
                 else
@@ -208,12 +259,48 @@ namespace cpp::blackmagic::depends
                     ++it;
                 }
             }
+            if (removed > 0)
+            {
+                StoreSnapshot(std::static_pointer_cast<const Table>(next));
+            }
             return removed;
         }
 
     private:
-        mutable std::shared_mutex mtx_{};
-        std::unordered_map<ExplicitValueKey, StoredAny, ExplicitValueKeyHash> table_{};
+        std::shared_ptr<const Table> LoadSnapshot() const
+        {
+#if CPPBM_HAS_ATOMIC_SHARED_PTR
+            return snapshot_.load(std::memory_order_acquire);
+#else
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+            return std::atomic_load_explicit(&snapshot_, std::memory_order_acquire);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif
+        }
+
+        void StoreSnapshot(std::shared_ptr<const Table> next)
+        {
+#if CPPBM_HAS_ATOMIC_SHARED_PTR
+            snapshot_.store(std::move(next), std::memory_order_release);
+#else
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+            std::atomic_store_explicit(&snapshot_, std::move(next), std::memory_order_release);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif
+        }
+
+        mutable std::mutex write_mtx_{};
+        SnapshotStorage snapshot_{};
     };
 
     // Default-argument metadata registry:
@@ -222,12 +309,26 @@ namespace cpp::blackmagic::depends
     {
     public:
         using StoredFactory = std::shared_ptr<const ErasedFactory>;
+        using Table = std::unordered_map<DefaultArgKey, StoredFactory, DefaultArgKeyHash>;
+#if CPPBM_HAS_ATOMIC_SHARED_PTR
+        using SnapshotStorage = std::atomic<std::shared_ptr<const Table>>;
+#else
+        using SnapshotStorage = std::shared_ptr<const Table>;
+#endif
+
+        DefaultArgRegistry()
+        {
+            StoreSnapshot(std::make_shared<const Table>());
+        }
 
         bool Register(const void* target, std::size_t index, std::type_index type, ErasedFactory factory)
         {
             auto stored = std::make_shared<const ErasedFactory>(std::move(factory));
-            std::unique_lock<std::shared_mutex> lock{ mtx_ };
-            table_[DefaultArgKey{ target, index, type }] = std::move(stored);
+            std::lock_guard<std::mutex> lock{ write_mtx_ };
+            auto base = LoadSnapshot();
+            auto next = std::make_shared<Table>(base ? *base : Table{});
+            (*next)[DefaultArgKey{ target, index, type }] = std::move(stored);
+            StoreSnapshot(std::static_pointer_cast<const Table>(next));
             return true;
         }
 
@@ -236,9 +337,13 @@ namespace cpp::blackmagic::depends
             std::size_t index,
             std::type_index type) const
         {
-            std::shared_lock<std::shared_mutex> lock{ mtx_ };
-            auto it = table_.find(DefaultArgKey{ target, index, type });
-            if (it == table_.end())
+            auto snapshot = LoadSnapshot();
+            if (!snapshot)
+            {
+                return std::nullopt;
+            }
+            auto it = snapshot->find(DefaultArgKey{ target, index, type });
+            if (it == snapshot->end())
             {
                 return std::nullopt;
             }
@@ -246,8 +351,40 @@ namespace cpp::blackmagic::depends
         }
 
     private:
-        mutable std::shared_mutex mtx_{};
-        std::unordered_map<DefaultArgKey, StoredFactory, DefaultArgKeyHash> table_{};
+        std::shared_ptr<const Table> LoadSnapshot() const
+        {
+#if CPPBM_HAS_ATOMIC_SHARED_PTR
+            return snapshot_.load(std::memory_order_acquire);
+#else
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+            return std::atomic_load_explicit(&snapshot_, std::memory_order_acquire);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif
+        }
+
+        void StoreSnapshot(std::shared_ptr<const Table> next)
+        {
+#if CPPBM_HAS_ATOMIC_SHARED_PTR
+            snapshot_.store(std::move(next), std::memory_order_release);
+#else
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+            std::atomic_store_explicit(&snapshot_, std::move(next), std::memory_order_release);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif
+        }
+
+        mutable std::mutex write_mtx_{};
+        SnapshotStorage snapshot_{};
     };
 
     inline ExplicitValueRegistry& GetExplicitValueRegistry()
@@ -572,5 +709,7 @@ namespace cpp::blackmagic::depends
         }
     };
 }
+
+#undef CPPBM_HAS_ATOMIC_SHARED_PTR
 
 #endif // __CPPBM_DEPENDS_REGISTRY_H__
