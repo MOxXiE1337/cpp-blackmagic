@@ -320,7 +320,7 @@ def get_function_info(func_node, code):
     def get_node_text(node, code):
         return code[node.start_byte:node.end_byte].decode('utf-8').strip()
 
-    def merge_scope_with_qualified(scope_parts: list[str], qualified_parts: list[str]) -> list[str]:
+    def merge_scope_with_qualified(scope_parts: List[str], qualified_parts: List[str]) -> List[str]:
         # Find the maximal overlap where suffix(scope_parts) == prefix(qualified_parts),
         # then prepend only the missing outer scopes.
         max_k = min(len(scope_parts), len(qualified_parts))

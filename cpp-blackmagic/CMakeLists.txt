@@ -40,14 +40,14 @@ if (WIN32)
         src/internal/hooker/minhook.cpp
     )
 
-    if (BUILD_WIN32)
+    if (BUILD_WINDOWS_X86)
         target_link_libraries(cpp-blackmagic
             PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/lib/libMinHook.x86.lib
         )
     endif ()
 
-    if (BUILD_WIN64)
+    if (BUILD_WINDOWS_X86_64)
         target_link_libraries(cpp-blackmagic
             PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/lib/libMinHook.x64.lib

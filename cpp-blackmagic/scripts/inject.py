@@ -14,6 +14,7 @@ Non-responsibilities:
 import argparse
 import re
 from pathlib import Path
+from typing import Set
 
 # Reuse parser/discovery utilities from decorator.py to keep behavior identical.
 from decorator import (
@@ -62,12 +63,12 @@ def build_default_arg_registration(func: dict, pd: dict) -> str:
     )
 
 
-def extract_inject_targets_from_generated_bindings(text: str) -> set[str]:
+def extract_inject_targets_from_generated_bindings(text: str) -> Set[str]:
     # Supports decorator-first pipeline:
     # decorator.py emits lines like:
     #   inline _Decorator_inject_<&ns::func> __cppbm_func_dec_xx{};
     # inject.py can resolve targets from these generated bindings.
-    targets: set[str] = set()
+    targets: Set[str] = set()
     for m in GENERATED_INJECT_BIND_RE.finditer(text):
         fullname = m.group("fullname")
         if fullname.startswith("::"):
