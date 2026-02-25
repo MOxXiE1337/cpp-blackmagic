@@ -83,6 +83,7 @@ You can define these in `.vcxproj` or VS User Macros:
   <CppbmPythonArgs>-3.9</CppbmPythonArgs>
   <CppbmScriptDir>$(MSBuildProjectDirectory)\cpp-blackmagic\scripts\</CppbmScriptDir>
   <CppbmStrictArg>--strict-parser</CppbmStrictArg>
+  <CppbmDisableFastUpToDateCheck>true</CppbmDisableFastUpToDateCheck>
 </PropertyGroup>
 ```
 
@@ -90,6 +91,7 @@ Notes:
 - `CppbmPythonExe` default: `python`
 - `CppbmPythonArgs` default: empty
 - `CppbmStrictArg` default: `--strict-parser`
+- `CppbmDisableFastUpToDateCheck` default: `true`
 
 ### 3) Output behavior
 For each `ClCompile` input (`.cpp/.cc/.cxx`):
@@ -101,6 +103,11 @@ For each `ClCompile` input (`.cpp/.cc/.cxx`):
 Then MSBuild swaps compile inputs:
 - removes original `ClCompile` inputs
 - compiles generated `.cppbm.gen.cpp` files
+
+Incremental behavior:
+- preprocessing runs on each MSBuild invocation
+- changes in original `.cpp` are picked up on next Build (no need to manually regenerate solution)
+- script updates are also picked up on next Build
 
 ### 4) Source editing experience
 - Original `.cpp` files are not overwritten.
@@ -126,3 +133,7 @@ This helps in mixed environments (for example, Visual Studio saving sources in U
 
 4. Double preprocessing symptoms
 - Do not enable both CMake preprocess and MSBuild preprocess for the same target.
+
+5. VS says "up to date" but source changed
+- Keep `CppbmDisableFastUpToDateCheck=true` (default in `preprocess.targets`)
+- If you intentionally want VS fast check, set it to `false` and verify your project up-to-date settings carefully.
