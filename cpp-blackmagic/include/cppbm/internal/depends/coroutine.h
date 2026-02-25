@@ -97,7 +97,22 @@ namespace cpp::blackmagic::depends
             // with the parent's captured DI state.
             if (auto continuation = promise.TakeContinuation())
             {
-                CurrentTaskScheduler().Enqueue(continuation, promise.TakeContinuationState());
+                auto continuation_state = promise.TakeContinuationState();
+                auto current_state = CurrentInjectStateOwner();
+
+                // Continuation fast-path:
+                // when continuation state is already the current active state,
+                // resume parent directly and skip one queue round-trip.
+                // If state differs, keep queue-based handoff to preserve context binding.
+                const bool same_state =
+                    continuation_state.get() == nullptr
+                    || continuation_state.get() == current_state.get();
+                if (same_state)
+                {
+                    return continuation;
+                }
+
+                CurrentTaskScheduler().Enqueue(continuation, std::move(continuation_state));
             }
             return std::noop_coroutine();
         }

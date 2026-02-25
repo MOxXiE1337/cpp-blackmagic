@@ -9,7 +9,7 @@ endif ()
 include("${CPPBM_PREPROCESS_CMAKE}")
 
 add_executable(cppbm-test-depends-benchmark
-    src/depends_benchmark.cpp
+    src/benchmark.cpp
 )
 
 CPPBM_ENABLE_DECORATOR(TARGET cppbm-test-depends-benchmark)

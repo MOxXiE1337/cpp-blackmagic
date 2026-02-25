@@ -525,6 +525,22 @@ namespace cpp::blackmagic
                 }
             }
 
+            template <std::size_t... I>
+            static bool HasDependsPlaceholderInArgRefsImpl(
+                std::tuple<Args&...>& arg_refs,
+                std::index_sequence<I...>)
+            {
+                return (... || IsDependsPlaceholder<
+                    std::tuple_element_t<I, std::tuple<Args...>>>(std::get<I>(arg_refs)));
+            }
+
+            static bool HasDependsPlaceholderInArgRefs(std::tuple<Args&...>& arg_refs)
+            {
+                return HasDependsPlaceholderInArgRefsImpl(
+                    arg_refs,
+                    std::index_sequence_for<Args...>{});
+            }
+
             // Async parameter-resolve wrapper.
             // Phase 2 behavior:
             // - consumes async metadata entries emitted by inject.py
@@ -664,6 +680,15 @@ namespace cpp::blackmagic
             }
             else if constexpr (depends::IsTaskReturn<R>::value)
             {
+                // Async fast path:
+                // when all arguments are explicit values (no Depends placeholder),
+                // skip ResolveArgAsync pipeline and call original directly.
+                if (!Resolver::HasDependsPlaceholderInArgRefs(arg_refs))
+                {
+                    auto result = invoker(std::forward<Args>(args)...);
+                    return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+                }
+
                 // Task-returning @inject uses coroutine-aware resolve/invoke path.
                 // Important lifetime note:
                 // - do not pass arg_refs (stack references) into coroutine frame.
@@ -718,6 +743,15 @@ namespace cpp::blackmagic
             }
             else if constexpr (depends::IsTaskReturn<R>::value)
             {
+                // Async fast path:
+                // when all arguments are explicit values (no Depends placeholder),
+                // skip ResolveArgAsync pipeline and call original directly.
+                if (!Resolver::HasDependsPlaceholderInArgRefs(arg_refs))
+                {
+                    auto result = invoker(std::forward<Args>(args)...);
+                    return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+                }
+
                 // Task-returning @inject uses coroutine-aware resolve/invoke path.
                 // Important lifetime note:
                 // - do not pass arg_refs (stack references) into coroutine frame.
@@ -772,6 +806,15 @@ namespace cpp::blackmagic
             }
             else if constexpr (depends::IsTaskReturn<R>::value)
             {
+                // Async fast path:
+                // when all arguments are explicit values (no Depends placeholder),
+                // skip ResolveArgAsync pipeline and call original directly.
+                if (!Resolver::HasDependsPlaceholderInArgRefs(arg_refs))
+                {
+                    auto result = invoker(std::forward<Args>(args)...);
+                    return depends::detail::AutoBindInjectContext(std::move(result), std::move(lease));
+                }
+
                 // Task-returning @inject uses coroutine-aware resolve/invoke path.
                 // Important lifetime note:
                 // - do not pass arg_refs (stack references) into coroutine frame.
