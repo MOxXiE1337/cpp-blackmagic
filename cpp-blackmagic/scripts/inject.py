@@ -7,7 +7,7 @@ Hook contract:
 
 import re
 import secrets
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 INJECT_EXPR_RE = re.compile(r"(?:::)?(?:[A-Za-z_]\w*::)*inject$")
@@ -53,7 +53,7 @@ def _validate_default_consistency(fullname: str, nodes: List[dict]) -> None:
     for n in nodes:
         if "param_count" in n:
             param_counts.add(n["param_count"])
-        signatures.add(tuple(n.get("param_types", [])))
+        signatures.add(tuple(_normalize_type_text(t) for t in n.get("param_types", [])))
     if len(param_counts) > 1:
         raise RuntimeError(
             "inject target has ambiguous overload set (different parameter counts) "
@@ -90,32 +90,79 @@ def _merge_defaults(nodes: List[dict]) -> List[dict]:
     return [merged[i] for i in sorted(merged)]
 
 
+def _normalize_type_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _binding_key(binding) -> Tuple[str, int, Tuple[str, ...]]:
+    types = tuple(_normalize_type_text(t) for t in getattr(binding, "target_param_types", []))
+    count = int(getattr(binding, "target_param_count", len(types)))
+    return (binding.target, count, types)
+
+
+def _select_nodes_for_binding(nodes: List[dict], binding) -> List[dict]:
+    sig = tuple(_normalize_type_text(t) for t in getattr(binding, "target_param_types", []))
+    count = int(getattr(binding, "target_param_count", len(sig)))
+    selected = []
+    for n in nodes:
+        n_count = int(n.get("param_count", -1))
+        n_sig = tuple(_normalize_type_text(t) for t in n.get("param_types", []))
+        if n_count == count and n_sig == sig:
+            selected.append(n)
+    # Backward-compatible fallback: if binding does not carry signature fields
+    # (older decorator.py output), keep previous fullname-based behavior.
+    if len(selected) == 0 and not hasattr(binding, "target_param_types"):
+        return nodes
+    return selected
+
+
 def _build_and_validate_defaults_map(context):
     records = _records_by_fullname(context)
-    defaults_by_fullname = {}
-
-    for fullname, nodes in records.items():
-        _validate_default_consistency(fullname, nodes)
-        defaults = _merge_defaults(nodes)
-        if len(defaults) > 0:
-            defaults_by_fullname[fullname] = defaults
-
+    defaults_by_binding = {}
     inject_bindings = [b for b in context.bindings if _is_cppbm_inject_binding(b)]
-    for b in inject_bindings:
-        if b.target not in records:
+    if len(inject_bindings) == 0:
+        return defaults_by_binding
+
+    # Validate and collect metadata only for actual @inject targets/signatures.
+    # Do not scan unrelated overload sets in the same translation unit.
+    unique_bindings = []
+    seen = set()
+    for binding in inject_bindings:
+        key = _binding_key(binding)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_bindings.append(binding)
+
+    for binding in unique_bindings:
+        target = binding.target
+        if target not in records:
             raise RuntimeError(
-                f"inject target '{b.target}' cannot be resolved from tree-sitter function nodes."
+                f"inject target '{target}' cannot be resolved from tree-sitter function nodes."
             )
+
+        nodes = _select_nodes_for_binding(records[target], binding)
+        if len(nodes) == 0:
+            raise RuntimeError(
+                "inject target signature cannot be resolved from tree-sitter function nodes: "
+                f"'{target}' with signature {getattr(binding, 'target_param_types', [])}"
+            )
+        _validate_default_consistency(target, nodes)
+
         # Enforce node kinds we explicitly support today.
         allowed = {"function_definition", "declaration", "field_declaration"}
-        for n in records[b.target]:
+        for n in nodes:
             node_type = n.get("node_type", "")
             if node_type not in allowed:
                 raise RuntimeError(
-                    f"inject target '{b.target}' resolved unsupported node type '{node_type}'."
+                    f"inject target '{target}' resolved unsupported node type '{node_type}'."
                 )
 
-    return defaults_by_fullname
+        defaults = _merge_defaults(nodes)
+        if len(defaults) > 0:
+            defaults_by_binding[_binding_key(binding)] = defaults
+
+    return defaults_by_binding
 
 
 def handle(context):
@@ -127,7 +174,7 @@ def handle(context):
     if state["defaults_by_fullname"] is None:
         state["defaults_by_fullname"] = _build_and_validate_defaults_map(context)
 
-    defaults_by_fullname = state["defaults_by_fullname"]
+    defaults_by_binding = state["defaults_by_fullname"]
     inject_bindings = [b for b in context.bindings if _is_cppbm_inject_binding(b)]
     if len(inject_bindings) == 0:
         return
@@ -138,7 +185,7 @@ def handle(context):
     for binding in inject_bindings:
         defaults = [
             pd
-            for pd in defaults_by_fullname.get(binding.target, [])
+            for pd in defaults_by_binding.get(_binding_key(binding), [])
             if _is_depends_default_expr(pd["default_expr"])
         ]
         if len(defaults) == 0:

@@ -158,6 +158,8 @@ class DecoratorBinding:
     expr: str
     source: str
     target: str
+    target_param_count: int
+    target_param_types: List[str]
     sentence: str
 
 
@@ -708,6 +710,8 @@ def main():
                 expr=dec.expr,
                 source=dec.source,
                 target=func_fullname,
+                target_param_count=func.get("param_count", 0),
+                target_param_types=list(func.get("param_types", [])),
                 sentence=sentence,
             )
         )

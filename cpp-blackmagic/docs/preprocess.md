@@ -1,29 +1,24 @@
-# preprocess Guide
+﻿# Preprocess Integration Guide (CMake / MSBuild)
 
-This document explains how to enable source preprocessing for `decorator.py` and `inject.py` in two environments:
-- CMake flow (`scripts/cmake/preprocess.cmake`)
-- Visual Studio MSBuild flow (`scripts/msbuild/preprocess.targets`)
+Decorator and inject behavior depends on preprocess scripts.
 
-Use one flow per target. Do not enable both for the same compile target.
+- `decorator.py`: handles `decorator(@...)`
+- `inject.py`: loaded as a module via `decorator.py --modules inject`
 
-## Prerequisites
-- Python 3 available in build environment
-- Python packages:
-  - `tree_sitter`
-  - `tree_sitter_cpp`
-  - optional fallback: `tree_sitter_languages`
+Without preprocess, `decorator(...)` is just a marker macro.
 
-Install example:
+## 1. Requirements
+
+- Python 3
+- Python packages: `tree_sitter`, `tree_sitter_cpp`
 
 ```bash
-pip install tree_sitter tree_sitter_cpp tree_sitter_languages
+pip install tree_sitter tree_sitter_cpp
 ```
 
-## CMake Flow
-File: `cpp-blackmagic/scripts/cmake/preprocess.cmake`
+## 2. CMake integration (recommended)
 
-### 1) Include helper and enable passes
-In your target `CMakeLists.txt`:
+### 2.1 Decorator only
 
 ```cmake
 set(CPPBM_PREPROCESS_CMAKE
@@ -31,98 +26,85 @@ set(CPPBM_PREPROCESS_CMAKE
 )
 include("${CPPBM_PREPROCESS_CMAKE}")
 
-add_executable(my-app src/main.cpp)
-
-CPPBM_ENABLE_DECORATOR(TARGET my-app)
-CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET my-app)
-
-target_link_libraries(my-app PRIVATE cpp-blackmagic)
+add_executable(my_app src/main.cpp)
+CPPBM_ENABLE_DECORATOR(TARGET my_app)
+target_link_libraries(my_app PRIVATE cpp-blackmagic)
 ```
 
-### 2) Output behavior
-- Decorator pass writes generated sources to:
-  - `${CMAKE_BINARY_DIR}/cppbm-gen/<target>/<relative-source-path>`
-- Inject pass runs on those generated sources in place.
-- Final compile input is replaced by generated files.
+### 2.2 Enable inject
 
-### 3) Important ordering
-Call order should be:
-1. `CPPBM_ENABLE_DECORATOR`
-2. `CPPBM_ENABLE_DEPENDENCY_INJECT`
+```cmake
+CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject)
+```
 
-This ensures inject metadata is generated from decorator-processed sources.
+### 2.3 Multiple modules
 
-## Visual Studio MSBuild Flow
-File: `cpp-blackmagic/scripts/msbuild/preprocess.targets`
+```cmake
+CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject your_module)
+```
 
-This flow compiles generated files from `$(IntDir)` and keeps original source files untouched.
+## 3. MSBuild integration
 
-### 1) Import targets into `.vcxproj`
-Add before `</Project>`:
+Use two files:
+
+- `scripts/msbuild/preprocess.props` for default variables
+- `scripts/msbuild/preprocess.targets` for preprocessing and compile-input swap
+
+In `.vcxproj`, import `preprocess.targets` only:
 
 ```xml
-<Import Project="$(MSBuildProjectDirectory)\cpp-blackmagic\scripts\msbuild\preprocess.targets"
-        Condition="Exists('$(MSBuildProjectDirectory)\cpp-blackmagic\scripts\msbuild\preprocess.targets')" />
+<ImportGroup Label="ExtensionTargets">
+  <Import Project="$(MSBuildProjectDirectory)\thirdparty\scripts\msbuild\preprocess.targets"
+          Condition="Exists('$(MSBuildProjectDirectory)\thirdparty\scripts\msbuild\preprocess.targets')" />
+</ImportGroup>
 ```
 
-### 2) Optional properties
-You can define these in `.vcxproj` or VS User Macros:
+`preprocess.targets` will auto-import `preprocess.props` when available.
+
+## 4. Common MSBuild properties
+
+Set in `.vcxproj` or `preprocess.props`:
 
 ```xml
 <PropertyGroup>
-  <CppbmPythonExe>py</CppbmPythonExe>
-  <CppbmPythonArgs>-3.9</CppbmPythonArgs>
-  <CppbmScriptDir>$(MSBuildProjectDirectory)\cpp-blackmagic\scripts\</CppbmScriptDir>
+  <CppbmEnable>true</CppbmEnable>
+  <CppbmPythonExe>python</CppbmPythonExe>
+  <CppbmPythonArgs></CppbmPythonArgs>
+  <CppbmModules>inject</CppbmModules>
+  <CppbmDecoratorArgs></CppbmDecoratorArgs>
   <CppbmDisableFastUpToDateCheck>true</CppbmDisableFastUpToDateCheck>
 </PropertyGroup>
 ```
 
 Notes:
-- `CppbmPythonExe` default: `python`
-- `CppbmPythonArgs` default: empty
-- `CppbmDisableFastUpToDateCheck` default: `true`
 
-### 3) Output behavior
-For each `ClCompile` input (`.cpp/.cc/.cxx`):
-- decorator output:
-  - `$(IntDir)cppbm\<RelativeDir>\<Filename>.cppbm.decor.cpp`
-- inject output:
-  - `$(IntDir)cppbm\<RelativeDir>\<Filename>.cppbm.gen.cpp`
+- `CppbmModules` accepts comma or semicolon separators
+- `CppbmDisableFastUpToDateCheck=true` helps avoid stale "up-to-date" results in VS
 
-Then MSBuild swaps compile inputs:
-- removes original `ClCompile` inputs
-- compiles generated `.cppbm.gen.cpp` files
+## 5. Generated outputs
 
-Incremental behavior:
-- preprocessing runs on each MSBuild invocation
-- changes in original `.cpp` are picked up on next Build (no need to manually regenerate solution)
-- script updates are also picked up on next Build
+- CMake: `<build>/cppbm-gen/<target>/...`
+- MSBuild: `$(IntDir)cppbm\...\*.cppbm.gen.cpp`
 
-### 4) Source editing experience
-- Original `.cpp` files are not overwritten.
-- You continue editing original files in IDE.
-- Generated files are build artifacts under `$(IntDir)`.
+Treat generated files as build artifacts.
 
-## Encoding Notes
-`decorator.py` and `inject.py` support auto-detection for common encodings (including UTF-16 LE/BE with BOM) and preserve source encoding on output.
+## 6. Troubleshooting checklist
 
-This helps in mixed environments (for example, Visual Studio saving sources in UTF-16).
+### Marker has no effect
 
-## Troubleshooting
-1. `decorator.py not found` / `inject.py not found`
-- Verify `CppbmScriptDir` (MSBuild) or include path (CMake).
+- confirm preprocess is enabled for the target
+- inspect generated source and verify `inline auto __cppbm_dec_...` bindings exist
 
-2. Parse failures in strict mode
-- Ensure tree-sitter packages are installed in the Python interpreter used by build.
+### Inject code not generated
 
-3. Works in shell, fails in IDE
-- IDE may use a different Python. Pin interpreter via:
-  - CMake: `Python3_EXECUTABLE`
-  - MSBuild: `CppbmPythonExe` + `CppbmPythonArgs`
+- check `CppbmModules` / `MODULES` includes `inject`
+- verify `inject.py` exists in script directory
 
-4. Double preprocessing symptoms
-- Do not enable both CMake preprocess and MSBuild preprocess for the same target.
+### IDE build differs from terminal build
 
-5. VS says "up to date" but source changed
-- Keep `CppbmDisableFastUpToDateCheck=true` (default in `preprocess.targets`)
-- If you intentionally want VS fast check, set it to `false` and verify your project up-to-date settings carefully.
+- IDE might be using a different Python
+- pin `CppbmPythonExe` and `CppbmPythonArgs`
+
+### Duplicate preprocessing
+
+Do not enable both CMake and MSBuild preprocessing for the same target.

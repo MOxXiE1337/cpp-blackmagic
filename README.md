@@ -1,68 +1,33 @@
-# cpp-blackmagic
+﻿# cpp-blackmagic
 
-`cpp-blackmagic` is a C++20 experimental framework for:
-- function decorators
-- runtime hooking
-- lightweight dependency injection
+`cpp-blackmagic` is a C++20 toolkit focused on practical call-site instrumentation:
 
-Main capabilities:
-- symbol decorator: `decorator(@logger)`
-- class decorator: `decorator(@router.get("/health"))`
-- hook backends via MinHook (Windows) and Dobby (Linux/Android)
-- `@inject + Depends(...)` parameter injection flow
+- function decorators (`decorator(@xxx)`)
+- dependency injection (`decorator(@inject)` + `Depends(...)`)
 
-Current status is closer to an engineering prototype than a production-ready general-purpose library.
+If you want logging, tracing, route registration, or runtime dependency overrides without rewriting business function signatures, this project is built for that workflow.
 
-## Docs
-- [decorator](cpp-blackmagic/docs/decorator.md)
-- [depends](cpp-blackmagic/docs/depends.md)
-- [preprocess](cpp-blackmagic/docs/preprocess.md)
+## What You Actually Use
 
-## Repository Layout
-- `cpp-blackmagic/include/cppbm/decorator.h`: public decorator entry API
-- `cpp-blackmagic/include/cppbm/depends.h`: public DI entry API
-- `cpp-blackmagic/include/cppbm/internal/hook/*`: hook pipeline and hook error model
-- `cpp-blackmagic/include/cppbm/internal/depends/*`: DI context, registry, resolver, error model
-- `cpp-blackmagic/scripts/decorator.py`: preprocess for `decorator(...)`
-- `cpp-blackmagic/scripts/inject.py`: preprocess for `@inject` default-arg metadata
-- `cpp-blackmagic/scripts/cmake/preprocess.cmake`: CMake integration helpers
-- `cpp-blackmagic/examples/src/decorator_example.cpp`: decorator + class decorator example
-- `cpp-blackmagic/examples/src/depends_example.cpp`: `@inject` + `Depends(...)` example
-- `cpp-blackmagic/tests/src/smoke_test.cpp`: optional smoke test target
-- `cpp-blackmagic/docs/decorator.md`: decorator deep dive
-- `cpp-blackmagic/docs/depends.md`: depends/inject deep dive
+- Add a decorator to a function: `decorator(@logger)`
+- Use expression-based decorators: `decorator(@router.get("/health"))`
+- Inject default dependencies: `decorator(@inject)` + `Depends(...)`
+- Override dependencies in tests: `ScopeOverrideDependency(...)`
 
-## Requirements
+## Quick Start
+
+### 1) Requirements
+
 - C++20 compiler
 - CMake >= 3.10
-- Python 3 (required by CMake preprocess step)
-- Python packages for preprocess scripts:
-  - `tree_sitter`
-  - `tree_sitter_cpp`
-  - optional fallback: `tree_sitter_languages`
-
-Install example:
+- Python 3
+- Python packages: `tree_sitter`, `tree_sitter_cpp`
 
 ```bash
-pip install tree_sitter tree_sitter_cpp tree_sitter_languages
+pip install tree_sitter tree_sitter_cpp
 ```
 
-## Build
-
-```bash
-cmake -S . -B build \
-  -DBUILD_LINUX_X86_64=ON \
-  -DBUILD_EXAMPLES=ON \
-  -DBUILD_TESTS=OFF
-cmake --build build
-```
-
-Options:
-- `BUILD_EXAMPLES` (default `ON`): build example executables under `cpp-blackmagic/examples`.
-- `BUILD_TESTS` (default `OFF`): build smoke test executable under `cpp-blackmagic/tests`.
-
-## Enable In Your Target
-In your own `CMakeLists.txt`:
+### 2) Enable preprocessing in CMake
 
 ```cmake
 set(CPPBM_PREPROCESS_CMAKE
@@ -70,129 +35,112 @@ set(CPPBM_PREPROCESS_CMAKE
 )
 include("${CPPBM_PREPROCESS_CMAKE}")
 
-add_executable(your-target main.cpp)
+add_executable(my_app src/main.cpp)
 
-CPPBM_ENABLE_DECORATOR(TARGET your-target)
-CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET your-target)
+# Decorator only
+CPPBM_ENABLE_DECORATOR(TARGET my_app)
 
-target_link_libraries(your-target PRIVATE cpp-blackmagic)
+# For @inject, enable module "inject"
+# CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject)
+
+target_link_libraries(my_app PRIVATE cpp-blackmagic)
 ```
 
-## Strict Parser Mode (recommended for CI)
-By default, preprocess scripts can fallback to regex scanning if tree-sitter is unavailable or parse fails.
-Enable strict mode to fail fast:
+### 3) Enable preprocessing in MSBuild (`.vcxproj`)
 
-```cmake
-set(CPPBM_PREPROCESS_STRICT_PARSER ON)
+Import `preprocess.targets` only:
+
+```xml
+<ImportGroup Label="ExtensionTargets">
+  <Import Project="$(MSBuildProjectDirectory)\thirdparty\scripts\msbuild\preprocess.targets"
+          Condition="Exists('$(MSBuildProjectDirectory)\thirdparty\scripts\msbuild\preprocess.targets')" />
+</ImportGroup>
 ```
 
-This option is defined in `cpp-blackmagic/scripts/cmake/preprocess.cmake`.
+`preprocess.targets` will auto-import `preprocess.props` when available.
 
-## Example Coverage
-`cpp-blackmagic/examples` provides:
-- `cppbm-example-decorator`:
-  - symbol decorator: `decorator(@add_one)`
-  - class decorator: `decorator(@router.get("/health"))`
-- `cppbm-example-depends`:
-  - `decorator(@inject)` with `Depends(factory)`
-  - target-scoped override: `ScopeOverrideDependency<&Target>(...)`
-  - global override: `ScopeOverrideDependency(...)`
-
-## Class Decorator Example (Router + RouteBinder)
-`decorator.py` supports class decorator syntax like:
-
-```cpp
-decorator(@router.get("/health"))
-int health();
-```
-
-The preprocessor turns it into a binding call like:
-
-```cpp
-inline auto __cppbm_health_dec_xx = (router.get("/health")).bind<&health>();
-```
-
-`bind<&Target>()` does not have to return a decorator object.
-It can return `bool` (or any other type) as long as the expression is valid and your desired side effect is produced.
-
-Minimal example:
+### 4) Minimal decorator example
 
 ```cpp
 #include <cppbm/decorator.h>
-#include <cstdio>
-#include <string>
-#include <unordered_map>
-#include <utility>
 
-class Router {
+using namespace cpp::blackmagic;
+
+template <auto Target>
+class LoggerDecorator;
+
+template <typename R, typename... Args, R(*Target)(Args...)>
+class LoggerDecorator<Target> : public FunctionDecorator<Target>
+{
 public:
-    class RouteBinder {
-    public:
-        RouteBinder(Router* router, std::string method, std::string path)
-            : router_(router), method_(std::move(method)), path_(std::move(path)) {}
-
-        template <auto Target>
-        bool bind() const
-        {
-            // registration-style class decorator: side effect + status return
-            return router_->register_route(method_, path_, target_key<Target>());
-        }
-
-    private:
-        template <auto Target>
-        static const void* target_key()
-        {
-            static int token = 0;
-            return &token;
-        }
-
-        Router* router_;
-        std::string method_;
-        std::string path_;
-    };
-
-    RouteBinder get(const char* path)
+    R Call(Args... args) override
     {
-        return RouteBinder{ this, "GET", path };
+        // before / after logic
+        return this->CallOriginal(args...);
     }
-
-    bool register_route(const std::string& method, const std::string& path, const void* handler_key)
-    {
-        const std::string key = method + " " + path;
-        return routes_.emplace(key, handler_key).second;
-    }
-
-private:
-    std::unordered_map<std::string, const void*> routes_{};
 };
 
-inline Router router{};
+CPPBM_DECORATOR_BINDER(LoggerDecorator, logger);
 
-decorator(@router.get("/health"))
-int health()
+decorator(@logger)
+int add(int a, int b)
 {
-    return 200;
+    return a + b;
 }
 ```
 
-## Error Policy
+### 5) Minimal inject example
 
-### Hook side
-Defined in `cpp-blackmagic/include/cppbm/internal/hook/error.h`:
-- `HookFailPolicy` (default: `Ignore`)
-- `SetHookFailPolicy(...)`
-- `SetHookErrorCallback(...)`
-- `GetLastHookError()`
+```cpp
+#include <cppbm/depends.h>
 
-### Inject side
-Defined in `cpp-blackmagic/include/cppbm/internal/depends/error.h`:
-- `InjectFailPolicy` (default: `Terminate`)
-- `SetInjectFailPolicy(...)`
-- `SetInjectErrorCallback(...)`
-- `InjectException`
+using namespace cpp::blackmagic;
 
-## Known Limitations
-- `decorator(@...)` binding uses nearest-following-function rule in preprocess stage and can be ambiguous with tricky source layout.
-- Member-function address conversion relies on ABI assumptions.
-- DI context is thread-local by default and does not auto-propagate across threads.
-- The repo currently focuses on executable examples and does not provide a full assertion-based regression suite yet.
+struct Config { const char* env = "prod"; };
+
+Config& DefaultConfigFactory()
+{
+    static Config cfg{};
+    return cfg;
+}
+
+decorator(@inject)
+const char* ReadEnv(Config& cfg = Depends(DefaultConfigFactory))
+{
+    return cfg.env;
+}
+```
+
+## Docs
+
+- [Decorator Guide](cpp-blackmagic/docs/decorator.md)
+- [Depends/Inject Guide](cpp-blackmagic/docs/depends.md)
+- [Preprocess Integration Guide](cpp-blackmagic/docs/preprocess.md)
+
+## Examples
+
+- [Decorator example](cpp-blackmagic/examples/src/decorator_example.cpp)
+- [Depends/Inject example](cpp-blackmagic/examples/src/depends_example.cpp)
+
+## Common Issues
+
+### `decorator(@xxx)` compiles but does nothing
+
+`decorator(...)` is a marker macro. Real binding is generated by preprocess scripts. Make sure preprocessing is enabled for your target.
+
+### `@inject` does not resolve defaults
+
+Check both:
+
+1. Target function has `decorator(@inject)`
+2. Build enables `MODULES inject`
+
+### How to override dependencies in tests
+
+Use RAII override guards:
+
+```cpp
+auto guard = ScopeOverrideDependency<&Target>(mock_ptr, Factory);
+```
+
+Value is restored automatically when guard goes out of scope.

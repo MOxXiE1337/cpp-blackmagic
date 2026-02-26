@@ -1,0 +1,17 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup Label="cpp-blackmagic Defaults">
+    <CppbmPropsImported>true</CppbmPropsImported>
+    <CppbmEnable Condition="'$(CppbmEnable)'==''">true</CppbmEnable>
+
+    <CppbmPythonExe Condition="'$(CppbmPythonExe)'==''">python</CppbmPythonExe>
+    <CppbmPythonArgs Condition="'$(CppbmPythonArgs)'==''"></CppbmPythonArgs>
+    <CppbmScriptDir Condition="'$(CppbmScriptDir)'==''">$(MSBuildThisFileDirectory)..\</CppbmScriptDir>
+    <CppbmDecoratorScript Condition="'$(CppbmDecoratorScript)'==''">$(CppbmScriptDir)decorator.py</CppbmDecoratorScript>
+    <CppbmDecoratorArgs Condition="'$(CppbmDecoratorArgs)'==''"></CppbmDecoratorArgs>
+    <CppbmModules Condition="'$(CppbmModules)'==''"></CppbmModules>
+    <CppbmDisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'==''">true</CppbmDisableFastUpToDateCheck>
+    <DisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'=='true'">true</DisableFastUpToDateCheck>
+  </PropertyGroup>
+
+</Project>
