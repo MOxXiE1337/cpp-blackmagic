@@ -18,9 +18,9 @@
 #include <utility>
 #include <vector>
 
-#include "../utils/contextvar.h"
-#include "meta.h"
-#include "registry.h"
+#include "../../utils/contextvar.h"
+#include "../compile/meta.h"
+#include "../compile/registry.h"
 
 namespace cpp::blackmagic::depends
 {

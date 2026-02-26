@@ -1,5 +1,8 @@
 // File role:
 // Asynchronous @inject argument resolution and invocation helpers.
+//
+// This layer mirrors sync resolver semantics, but runs placeholder resolution
+// through coroutine-aware metadata APIs and returns Task-based results.
 
 #ifndef __CPPBM_DEPENDS_INJECT_ASYNC_H__
 #define __CPPBM_DEPENDS_INJECT_ASYNC_H__
@@ -8,17 +11,21 @@
 #include <type_traits>
 #include <utility>
 
-#include "inject_sync.h"
-#include "resolve_async.h"
+#include "sync.h"
+#include "../resolve/async.h"
 
 namespace cpp::blackmagic::depends
 {
     template <typename T>
     struct IsTaskReturn;
 
+    // Async resolver extends sync resolver behavior for Task-returning targets.
     template <auto Target, typename... Args>
     struct InjectCallResolverAsync : InjectCallResolverSync<Target, Args...>
     {
+        // Internal helper used by runtime fast path:
+        // if no Depends placeholder exists in actual arguments, async resolver can
+        // skip per-argument async pipeline entirely.
         template <std::size_t... I>
         static bool HasDependsPlaceholderInArgRefsImpl(
             std::tuple<Args&...>& arg_refs,
@@ -35,29 +42,41 @@ namespace cpp::blackmagic::depends
                 std::index_sequence_for<Args...>{});
         }
 
+        // Async equivalent of ResolveArg:
+        // - same policy as sync path
+        // - metadata is resolved via TryResolveDefaultArgForParamAsync
+        // - failures are mapped to the same error model
         template <std::size_t Index, typename A>
         static Task<std::tuple_element_t<Index, std::tuple<Args...>>> ResolveArgAsync(A& arg)
         {
             using Declared = std::tuple_element_t<Index, std::tuple<Args...>>;
             using Raw = std::remove_cv_t<std::remove_reference_t<Declared>>;
             const void* target = TargetKeyOf<Target>();
-            const bool is_depends_param = IsDependsPlaceholder<Declared>(arg);
-
-            if constexpr (std::is_reference_v<Declared>)
+            if (!IsDependsPlaceholder<Declared>(arg))
             {
-                if (!is_depends_param)
-                {
-                    co_return static_cast<Declared>(arg);
-                }
+                // Non-placeholder argument: caller provided explicit value.
+                co_return static_cast<Declared>(arg);
+            }
 
-                const void* resolved_factory = nullptr;
-                if (co_await TryResolveDefaultArgForParamAsync<Declared>(target, Index, arg, &resolved_factory))
+            // Placeholder argument: resolve from default-arg metadata for this target/index.
+            const void* resolved_factory = nullptr;
+            if (co_await TryResolveDefaultArgForParamAsync<Declared>(target, Index, arg, &resolved_factory))
+            {
+                if constexpr (std::is_reference_v<Declared>)
                 {
                     if (auto* resolved_ptr = TryResolveRawPtr<Raw>(target, resolved_factory))
                     {
                         co_return static_cast<Declared>(*resolved_ptr);
                     }
                 }
+                else
+                {
+                    co_return static_cast<Declared>(arg);
+                }
+            }
+
+            if constexpr (std::is_reference_v<Declared>)
+            {
                 co_return FailInject<Declared>(InjectError{
                     InjectErrorCode::MissingDependency,
                     target,
@@ -67,43 +86,27 @@ namespace cpp::blackmagic::depends
                     "Depends placeholder async resolution failed in @inject: missing slot(T&)."
                     });
             }
-            else
+            else if constexpr (std::is_pointer_v<Declared>)
             {
-                if (!is_depends_param)
-                {
-                    co_return static_cast<Declared>(arg);
-                }
-
-                const void* resolved_factory = nullptr;
-                if (co_await TryResolveDefaultArgForParamAsync<Declared>(target, Index, arg, &resolved_factory))
-                {
-                    co_return static_cast<Declared>(arg);
-                }
-
-                if constexpr (std::is_pointer_v<Declared>)
-                {
-                    using Pointee = std::remove_cv_t<std::remove_pointer_t<Declared>>;
-                    co_return FailInject<Declared>(InjectError{
-                        InjectErrorCode::MissingDependency,
-                        target,
-                        Index,
-                        typeid(Pointee),
-                        resolved_factory,
-                        "Depends placeholder async resolution failed in @inject: missing slot(T*)."
-                        });
-                }
-                else
-                {
-                    co_return FailInject<Declared>(InjectError{
-                        InjectErrorCode::MissingDependency,
-                        target,
-                        Index,
-                        typeid(Raw),
-                        resolved_factory,
-                        "Depends placeholder async resolution failed in @inject: missing slot(T)."
-                        });
-                }
+                using Pointee = std::remove_cv_t<std::remove_pointer_t<Declared>>;
+                co_return FailInject<Declared>(InjectError{
+                    InjectErrorCode::MissingDependency,
+                    target,
+                    Index,
+                    typeid(Pointee),
+                    resolved_factory,
+                    "Depends placeholder async resolution failed in @inject: missing slot(T*)."
+                    });
             }
+
+            co_return FailInject<Declared>(InjectError{
+                InjectErrorCode::InvalidPlaceholder,
+                target,
+                Index,
+                typeid(Raw),
+                resolved_factory,
+                "Depends placeholder is only supported for pointer/reference parameters in @inject."
+                });
         }
 
         template <typename RTask, typename Invoker, std::size_t... I>
@@ -113,6 +116,8 @@ namespace cpp::blackmagic::depends
             std::tuple<Args...> arg_values,
             std::index_sequence<I...>)
         {
+            // Arguments are stored by value in arg_values to avoid dangling stack refs
+            // after outer call frame returns and coroutine resumes later.
             using TaskValue = typename IsTaskReturn<RTask>::ValueType;
             if constexpr (std::is_void_v<TaskValue>)
             {

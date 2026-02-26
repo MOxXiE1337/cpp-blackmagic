@@ -196,18 +196,18 @@ namespace cpp::blackmagic::hook
         static R CallOriginal(CallArgs... args)
         {
             OrigFn orig = Core::Original();
-            if constexpr (std::is_void_v<R>)
+            if (!orig)
             {
-                if (orig)
-                    std::invoke(orig, args...);
-                return;
-            }
-            else
-            {
-                if (!orig)
+                if constexpr (std::is_void_v<R>)
+                {
+                    return;
+                }
+                else
+                {
                     return DefaultReturn();
-                return std::invoke(orig, args...);
+                }
             }
+            return std::invoke(orig, args...);
         }
 
         static R Dispatch(CallArgs... args)
@@ -233,15 +233,7 @@ namespace cpp::blackmagic::hook
             auto on_exit = utils::ScopeExit([&]
                 { self->AfterCall(); });
 
-            if constexpr (std::is_void_v<R>)
-            {
-                self->Call(args...); // if Call throw exceptions, AfterCall will still be invoked
-                return;
-            }
-            else
-            {
-                return self->Call(args...);
-            }
+            return self->Call(args...); // if Call throw exceptions, AfterCall will still be invoked
         }
 
     private:

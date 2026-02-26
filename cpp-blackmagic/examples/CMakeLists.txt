@@ -19,7 +19,5 @@ add_executable(cppbm-example-depends
     src/depends_example.cpp
 )
 
-CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-depends)
-CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET cppbm-example-depends)
+CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-depends MODULES inject)
 target_link_libraries(cppbm-example-depends PRIVATE cpp-blackmagic)
-

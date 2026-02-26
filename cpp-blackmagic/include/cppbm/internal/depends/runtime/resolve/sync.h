@@ -9,11 +9,17 @@
 #ifndef __CPPBM_DEPENDS_RESOLVE_SYNC_H__
 #define __CPPBM_DEPENDS_RESOLVE_SYNC_H__
 
-#include "placeholder.h"
-#include "context.h"
+#include "../placeholder.h"
+#include "../context.h"
 
 namespace cpp::blackmagic::depends
 {
+    // Ensure one raw slot of type T is available in current context chain.
+    //
+    // Behavior knobs:
+    // - allow_default: permit constructing default T when no slot/explicit value exists
+    // - factory: slot key partition for Depends(factory) isolation
+    // - cached: when true, first try reusing existing slot from current/parent contexts
     template <typename T>
     [[nodiscard]] ContextSlot* EnsureRawSlot(
         const void* target,
@@ -56,6 +62,8 @@ namespace cpp::blackmagic::depends
         return nullptr;
     }
 
+    // Try resolve a non-reference dependency type U.
+    // Returns nullopt on miss instead of raising failure.
     template <typename U>
     [[nodiscard]] std::optional<U> TryResolveByType(
         const void* target,
@@ -88,6 +96,8 @@ namespace cpp::blackmagic::depends
         }
     }
 
+    // Lightweight raw-pointer resolver used by reference-parameter call paths.
+    // Returns nullptr on miss.
     template <typename T>
     [[nodiscard]] std::remove_cv_t<T>* TryResolveRawPtr(
         const void* target,
@@ -103,6 +113,8 @@ namespace cpp::blackmagic::depends
         return static_cast<Raw*>(slot->obj);
     }
 
+    // Strict resolver variant that fails via FailInject on missing dependency.
+    // Used in paths where missing dependency is a hard runtime error.
     template <typename U>
     U ResolveByType(
         const void* target,
@@ -163,6 +175,9 @@ namespace cpp::blackmagic::depends
         }
     }
 
+    // Cache one resolved value into current context with category-aware ownership:
+    // - pointer -> borrowed slot
+    // - value   -> owned slot
     template <typename U>
     void CacheResolvedValue(U&& value, const void* factory = nullptr)
     {
@@ -180,6 +195,17 @@ namespace cpp::blackmagic::depends
         }
     }
 
+    // Resolve one default-argument metadata entry for parameter A.
+    //
+    // Expected usage:
+    // - called only when caller passed Depends placeholder
+    // - returns true when argument is resolved and/or slot is prepared
+    // - returns false when no usable metadata exists or resolution failed
+    //
+    // Resolution phases:
+    // 1) pointer-metadata path: DependsPtrValue<Raw> for reference/pointer params
+    // 2) fallback plain-value metadata path: Resolve<Param>
+    // 3) legacy compatibility path for old RefRaw* metadata (reference params only)
     template <typename A>
     bool TryResolveDefaultArgForParam(
         const void* target,
@@ -196,46 +222,93 @@ namespace cpp::blackmagic::depends
                 }
             };
 
-        DependsExecutionScope scope{};
+        // Shared pointer-metadata resolver for both:
+        // - reference params (WriteOut=false): slot preparation only
+        // - pointer params   (WriteOut=true): also writes out pointer argument
+        auto resolve_ptr_meta = [&]<typename Raw, bool WriteOut>() -> bool
+            {
+                if (auto ptr_meta = InjectRegistry::Resolve<DependsPtrValue<Raw>>(target, index))
+                {
+                    set_factory(ptr_meta->factory);
+
+                    const bool is_plain_depends_placeholder =
+                        ptr_meta->factory == nullptr
+                        && IsDependsPlaceholder<Raw*>(ptr_meta->ptr);
+
+                    // Highest priority: explicit override registry for exact key.
+                    if (TryPopulateRawSlotFromExplicit<Raw>(target, ptr_meta->factory))
+                    {
+                        if constexpr (WriteOut)
+                        {
+                            if (auto* resolved = TryResolveRawPtr<Raw>(target, ptr_meta->factory, ptr_meta->cached))
+                            {
+                                out = static_cast<Param>(resolved);
+                                return true;
+                            }
+                        }
+                        else
+                        {
+                            return true;
+                        }
+                    }
+
+                    // Depends() placeholder metadata:
+                    // resolve from existing/explicit/default slot flow (factory == nullptr).
+                    if (is_plain_depends_placeholder)
+                    {
+                        auto* slot = EnsureRawSlot<Raw>(target, true, nullptr, ptr_meta->cached);
+                        if (slot == nullptr || slot->obj == nullptr)
+                        {
+                            return false;
+                        }
+                        if constexpr (WriteOut)
+                        {
+                            out = static_cast<Param>(slot->obj);
+                        }
+                        return true;
+                    }
+
+                    // Metadata already produced concrete pointer.
+                    // Cache it into current context with owned/borrowed policy.
+                    if (ptr_meta->ptr != nullptr)
+                    {
+                        if constexpr (WriteOut)
+                        {
+                            out = static_cast<Param>(ptr_meta->ptr);
+                        }
+
+                        auto* existing = FindSlotInChain(typeid(Raw), ptr_meta->factory);
+                        const bool same_cached_ptr =
+                            (existing != nullptr) && (existing->obj == ptr_meta->ptr);
+
+                        // Keep existing ownership state when metadata pointer is exactly the same.
+                        // Avoid replacing owned slot by borrowed slot for same pointer value.
+                        if (same_cached_ptr && !ptr_meta->owned)
+                        {
+                            return true;
+                        }
+
+                        if (ptr_meta->owned)
+                        {
+                            CacheOwnedRaw<Raw>(ptr_meta->ptr, ptr_meta->factory);
+                        }
+                        else
+                        {
+                            CacheBorrowedRaw<Raw>(ptr_meta->ptr, ptr_meta->factory);
+                        }
+                        return true;
+                    }
+                    return false;
+                }
+                return false;
+            };
 
         if constexpr (std::is_reference_v<A>)
         {
             using RefRaw = std::remove_cv_t<std::remove_reference_t<A>>;
-            if (auto ptr_meta = InjectRegistry::Resolve<DependsPtrValue<RefRaw>>(target, index))
+            if (resolve_ptr_meta.template operator()<RefRaw, false>())
             {
-                set_factory(ptr_meta->factory);
-
-                // Explicit injection override by (target, factory, type).
-                if (TryPopulateRawSlotFromExplicit<RefRaw>(target, ptr_meta->factory))
-                {
-                    return true;
-                }
-
-                if (ptr_meta->ptr != nullptr)
-                {
-                    auto* existing = FindSlotInChain(typeid(RefRaw), ptr_meta->factory);
-                    const bool same_cached_ptr =
-                        (existing != nullptr) && (existing->obj == ptr_meta->ptr);
-
-                    // Keep existing ownership state when metadata pointer is exactly the same.
-                    // This avoids replacing an owned slot with a borrowed slot and creating
-                    // a dangling pointer (common path for plain Depends()).
-                    if (same_cached_ptr && !ptr_meta->owned)
-                    {
-                        return true;
-                    }
-
-                    if (ptr_meta->owned)
-                    {
-                        CacheOwnedRaw<RefRaw>(ptr_meta->ptr, ptr_meta->factory);
-                    }
-                    else
-                    {
-                        CacheBorrowedRaw<RefRaw>(ptr_meta->ptr, ptr_meta->factory);
-                    }
-                    return true;
-                }
-                return false;
+                return true;
             }
 
             // Backward-compatibility path for old generated metadata.
@@ -256,49 +329,16 @@ namespace cpp::blackmagic::depends
         }
         else if constexpr (std::is_pointer_v<Param>)
         {
+            // Pointer parameter path uses the same metadata flow with WriteOut=true.
             using Pointee = std::remove_cv_t<std::remove_pointer_t<Param>>;
-            if (auto ptr_meta = InjectRegistry::Resolve<DependsPtrValue<Pointee>>(target, index))
+            if (resolve_ptr_meta.template operator()<Pointee, true>())
             {
-                set_factory(ptr_meta->factory);
-
-                if (TryPopulateRawSlotFromExplicit<Pointee>(target, ptr_meta->factory))
-                {
-                    if (auto* resolved = TryResolveRawPtr<Pointee>(target, ptr_meta->factory, ptr_meta->cached))
-                    {
-                        out = static_cast<Param>(resolved);
-                        return true;
-                    }
-                }
-
-                if (ptr_meta->ptr != nullptr)
-                {
-                    out = static_cast<Param>(ptr_meta->ptr);
-                    auto* existing = FindSlotInChain(typeid(Pointee), ptr_meta->factory);
-                    const bool same_cached_ptr =
-                        (existing != nullptr) && (existing->obj == ptr_meta->ptr);
-
-                    // Keep existing ownership state when metadata pointer is exactly the same.
-                    // This avoids replacing an owned slot with a borrowed slot and creating
-                    // a dangling pointer (common path for plain Depends()).
-                    if (same_cached_ptr && !ptr_meta->owned)
-                    {
-                        return true;
-                    }
-
-                    if (ptr_meta->owned)
-                    {
-                        CacheOwnedRaw<Pointee>(ptr_meta->ptr, ptr_meta->factory);
-                    }
-                    else
-                    {
-                        CacheBorrowedRaw<Pointee>(ptr_meta->ptr, ptr_meta->factory);
-                    }
-                    return true;
-                }
-                return false;
+                return true;
             }
         }
 
+        // Plain-value metadata path.
+        // This is defensive/compatibility behavior and is not the main Depends flow.
         auto value = InjectRegistry::Resolve<Param>(target, index);
         set_factory(nullptr);
         if (!value)

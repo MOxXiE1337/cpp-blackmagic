@@ -20,12 +20,6 @@ CPPBM_ENABLE_DECORATOR(TARGET your_target)
 CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET your_target)
 ```
 
-Optional strict parser mode:
-
-```cmake
-set(CPPBM_PREPROCESS_STRICT_PARSER ON)
-```
-
 ### 1.2 Minimal Usage
 
 ```cpp
@@ -155,7 +149,8 @@ Async resolver prefers async entries and falls back to sync entries.
   - explicit registry + default-arg metadata registry
 - `internal/depends/context.h`
   - inject state, slot chain, context lease, contextvar binding
-- `internal/depends/resolve.h`
+- `internal/depends/runtime/resolve_sync.h`
+- `internal/depends/runtime/resolve_async.h`
   - sync/async resolution logic
 - `internal/depends/coroutine.h`
   - scheduler-backed `Task<T>`
@@ -404,4 +399,3 @@ If async route crashes:
   - `examples/src/depends_example.cpp`
 - Async route + async dependency factories:
   - `examples/http-server/http_server_example.cpp`
-

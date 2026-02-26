@@ -1,5 +1,11 @@
 // File role:
 // Aggregate @inject runtime pipeline and decorator bindings.
+//
+// This header is the runtime entry for @inject call dispatch.
+// It wires together:
+// - call-scope context setup/teardown
+// - sync vs async argument resolver selection
+// - concrete decorator wrappers for free/member functions
 
 #ifndef __CPPBM_DEPENDS_INJECT_H__
 #define __CPPBM_DEPENDS_INJECT_H__
@@ -8,30 +14,35 @@
 #include <type_traits>
 #include <utility>
 
-#include "../../decorator.h"
-#include "inject_async.h"
+#include "../../../decorator.h"
+#include "inject/async.h"
 
 namespace cpp::blackmagic::depends
 {
+    // Unified runtime entry used by InjectDecorator<Target>::Call.
+    //
+    // Dispatch policy by target return type R:
+    // - R is void/reference: sync resolver path
+    // - R is Task<T>: async resolver path, with fast path when no placeholder
+    // - otherwise: sync resolver + context binding on returned value
+    //
+    // Why lease/state is created here:
+    // - all parameter resolution and nested @inject calls must share one call scope
+    // - task return types may outlive current stack frame; lease is rebound to task
     template <auto Target, typename R, typename... Args, typename Invoker>
     R InvokeInjectedCall(Invoker&& invoker, Args&&... args)
     {
         using SyncResolver = InjectCallResolverSync<Target, Args...>;
         using AsyncResolver = InjectCallResolverAsync<Target, Args...>;
 
+        // Create one call lease and make it current for this invocation.
         auto lease = AcquireInjectCallLease();
         ActiveInjectStateScope active_state{ lease.StateOwner() };
         auto arg_refs = std::forward_as_tuple(args...);
 
-        if constexpr (std::is_void_v<R>)
-        {
-            SyncResolver::template Invoke<R>(
-                std::forward<Invoker>(invoker),
-                arg_refs,
-                std::index_sequence_for<Args...>{});
-            return;
-        }
-        else if constexpr (std::is_reference_v<R>)
+        // Void/reference returns are never context-rebound values.
+        // Resolve parameters synchronously and call through directly.
+        if constexpr (std::is_void_v<R> || std::is_reference_v<R>)
         {
             return SyncResolver::template Invoke<R>(
                 std::forward<Invoker>(invoker),
@@ -63,6 +74,9 @@ namespace cpp::blackmagic::depends
         }
         else
         {
+            // Non-task value return:
+            // resolve args synchronously, invoke, then bind context to return object
+            // when return type supports binding adapters.
             auto result = SyncResolver::template Invoke<R>(
                 std::forward<Invoker>(invoker),
                 arg_refs,
@@ -70,29 +84,24 @@ namespace cpp::blackmagic::depends
             return detail::AutoBindInjectContext(std::move(result), std::move(lease));
         }
     }
+
 }
 
 namespace cpp::blackmagic
 {
     template <auto Target>
-    class decorator_class(inject);
+    class InjectDecorator;
 
     template <typename R, typename... Args, R(*Target)(Args...)>
-    class decorator_class(inject)<Target> : public FunctionDecorator<Target>
+    class InjectDecorator<Target> : public FunctionDecorator<Target>
     {
     public:
         R Call(Args... args)
         {
+            // Invoker always calls original function.
+            // Parameter transformation happens in InvokeInjectedCall.
             auto invoker = [this](auto&&... resolved_args) -> R {
-                if constexpr (std::is_void_v<R>)
-                {
-                    this->CallOriginal(std::forward<decltype(resolved_args)>(resolved_args)...);
-                    return;
-                }
-                else
-                {
-                    return this->CallOriginal(std::forward<decltype(resolved_args)>(resolved_args)...);
-                }
+                return this->CallOriginal(std::forward<decltype(resolved_args)>(resolved_args)...);
                 };
             return depends::InvokeInjectedCall<Target, R, Args...>(
                 std::move(invoker),
@@ -101,21 +110,15 @@ namespace cpp::blackmagic
     };
 
     template <typename C, typename R, typename... Args, R(C::*Target)(Args...)>
-    class decorator_class(inject)<Target> : public FunctionDecorator<Target>
+    class InjectDecorator<Target> : public FunctionDecorator<Target>
     {
     public:
         R Call(C* thiz, Args... args)
         {
+            // Member function wrapper keeps object pointer and delegates argument
+            // resolution/lifetime handling to InvokeInjectedCall.
             auto invoker = [this, thiz](auto&&... resolved_args) -> R {
-                if constexpr (std::is_void_v<R>)
-                {
-                    this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
-                    return;
-                }
-                else
-                {
-                    return this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
-                }
+                return this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
                 };
             return depends::InvokeInjectedCall<Target, R, Args...>(
                 std::move(invoker),
@@ -124,27 +127,21 @@ namespace cpp::blackmagic
     };
 
     template <typename C, typename R, typename... Args, R(C::*Target)(Args...) const>
-    class decorator_class(inject)<Target> : public FunctionDecorator<Target>
+    class InjectDecorator<Target> : public FunctionDecorator<Target>
     {
     public:
         R Call(const C* thiz, Args... args)
         {
+            // Const member specialization mirrors mutable-member behavior.
             auto invoker = [this, thiz](auto&&... resolved_args) -> R {
-                if constexpr (std::is_void_v<R>)
-                {
-                    this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
-                    return;
-                }
-                else
-                {
-                    return this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
-                }
+                return this->CallOriginal(thiz, std::forward<decltype(resolved_args)>(resolved_args)...);
                 };
             return depends::InvokeInjectedCall<Target, R, Args...>(
                 std::move(invoker),
                 std::forward<Args>(args)...);
         }
     };
+
 }
 
 #endif // __CPPBM_DEPENDS_INJECT_H__

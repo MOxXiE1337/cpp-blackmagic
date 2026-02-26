@@ -14,14 +14,19 @@
 // - coroutine-aware invoke path for Task-returning targets
 
 #include "decorator.h"
-#include "internal/depends/error.h"
-#include "internal/depends/meta.h"
-#include "internal/depends/maker.h"
-#include "internal/depends/context.h"
-#include "internal/depends/coroutine.h"
+#include "internal/depends/runtime/error.h"
+#include "internal/depends/compile/meta.h"
+#include "internal/depends/runtime/placeholder.h"
+#include "internal/depends/runtime/context.h"
+#include "internal/depends/runtime/coroutine/task.h"
 
 namespace cpp::blackmagic
 {
+    // Public task alias is exported from top-level API header,
+    // not from internal coroutine implementation headers.
+    template <typename T = void>
+    using Task = depends::Task<T>;
+
     template <typename T>
     inline constexpr bool kIsSupportedDependencyHandleV =
         std::is_pointer_v<std::remove_cvref_t<T>>
@@ -29,6 +34,9 @@ namespace cpp::blackmagic
 
     namespace depends
     {
+        template <typename>
+        inline constexpr bool kAlwaysFalseV = false;
+
         // Return-type trait for coroutine-aware @inject and async metadata path.
         template <typename T>
         struct IsTaskReturn : std::false_type
@@ -51,10 +59,9 @@ namespace cpp::blackmagic
     // cached:
     // - true  => may reuse a previously resolved slot in context chain
     // - false => force fresh resolve (factory/default-construct) into current slot
-    template <typename = void>
-    inline depends::DependsMaker Depends(bool cached = true)
+    inline depends::DependsMaker<> Depends(bool cached = true)
     {
-        return depends::DependsMaker{ cached };
+        return depends::DependsMaker<>{ nullptr, cached };
     }
 
     // Depends(factory) entry:
@@ -63,7 +70,7 @@ namespace cpp::blackmagic
     // - task-like object with Get() whose final result is pointer/reference.
     // The returned maker is converted later according to declared parameter type.
     template <typename T>
-    constexpr depends::DependsMakerWithFactory<T> Depends(T(*factory)(), bool cached = true)
+    constexpr depends::DependsMaker<T> Depends(T(*factory)(), bool cached = true)
     {
         static_assert(depends::kIsSupportedFactoryReturnV<T>,
             "Depends(factory): factory return type must be pointer/reference "
@@ -101,17 +108,21 @@ namespace cpp::blackmagic
         }
 
         // Build async metadata for Depends(factory) path.
-        //
-        // Why a named helper instead of an immediately-invoked coroutine lambda:
-        // - coroutine lambdas keep captures in the closure object;
-        // - closure temporaries can be destroyed before resumed execution;
-        // - that can leave dangling capture reads after suspension.
-        //
-        // This helper takes maker by value, so coroutine state is stored safely
-        // inside the coroutine frame itself.
         template <typename Param, typename Meta, typename FactoryReturn>
-        Task<Meta> MakeDefaultArgMetadataAsyncFromFactory(FactoryReturn(*factory)(), bool cached)
+        Task<Meta> BuildAsyncMetaFromFactory(FactoryReturn(*factory)(), bool cached)
         {
+            if (factory == nullptr)
+            {
+                co_return FailInject<Meta>(InjectError{
+                    InjectErrorCode::InvalidPlaceholder,
+                    nullptr,
+                    static_cast<std::size_t>(-1),
+                    typeid(FactoryReturn),
+                    nullptr,
+                    "Depends(factory) metadata build failed: factory pointer is null."
+                    });
+            }
+
             using Raw = DependsRawFromParamT<Param>;
             decltype(auto) produced = InvokeFactory(factory);
             DependsPtrValue<Raw> out{};
@@ -121,24 +132,6 @@ namespace cpp::blackmagic
             out.factory = FactoryKeyOf(factory);
             out.cached = cached;
             co_return static_cast<Meta>(out);
-        }
-
-        // Build async metadata for plain Depends() path.
-        // Use only primitive parameter types to avoid promise-constructor probing
-        // against DependsMaker conversion operators.
-        template <typename Param, typename Meta>
-        Task<Meta> MakeDefaultArgMetadataAsyncFromDepends(bool cached)
-        {
-            DependsMaker maker{ cached };
-            co_return static_cast<Meta>(MakeDefaultArgMetadata<Param>(std::move(maker)));
-        }
-
-        // Build async metadata for non-Depends value path.
-        // Keep behavior consistent with existing sync metadata builder.
-        template <typename Param, typename Meta, typename Value>
-        Task<Meta> MakeDefaultArgMetadataAsyncFromValue(Value value)
-        {
-            co_return static_cast<Meta>(MakeDefaultArgMetadata<Param>(std::move(value)));
         }
     }
 
@@ -150,35 +143,42 @@ namespace cpp::blackmagic
         // - sync metadata path may call Get() for task-like factories
         // - async @inject parameter pipeline should await task-like factories instead
         //
-        // Compatibility policy:
+        // Supported expression policy:
         // - Depends(factory): async path, await factory result if needed
-        // - Depends() / non-Depends expression: fallback to existing sync metadata behavior
+        // - Depends(): build metadata from DependsMaker in coroutine return path
+        // - non-Depends expressions are intentionally rejected
         template <typename Param, typename Expr>
-        Task<DefaultArgMetadataTypeT<Param, Expr&&>> MakeDefaultArgMetadataAsync(Expr&& expr)
+        Task<DefaultArgMetadataTypeT<Param, Expr&&>> MakeDefaultArgMetadataAsync(Expr expr)
         {
             using E = RemoveCvRefT<Expr>;
             using Meta = DefaultArgMetadataTypeT<Param, Expr&&>;
 
-            if constexpr (IsDependsMakerWithFactory<E>::value)
+            if constexpr (IsDependsFactoryMaker<E>::value)
             {
-                E maker = std::forward<Expr>(expr);
-                return detail::MakeDefaultArgMetadataAsyncFromFactory<Param, Meta>(
+                // Important coroutine lifetime rule:
+                // this coroutine starts suspended (initial_suspend == suspend_always),
+                // so forwarding-reference parameters can dangle if caller passes a temporary.
+                // Accept Expr by value and move here to keep maker stable in coroutine frame.
+                E maker = std::move(expr);
+                co_return co_await detail::BuildAsyncMetaFromFactory<Param, Meta>(
                     maker.factory,
                     maker.cached);
             }
             else if constexpr (IsDependsMaker<E>::value)
             {
-                E maker = std::forward<Expr>(expr);
-                return detail::MakeDefaultArgMetadataAsyncFromDepends<Param, Meta>(
-                    maker.cached);
+                // Keep a concrete maker value to avoid conversion-probe surprises
+                // from DependsMaker conversion operators in template deduction.
+                E maker = std::move(expr);
+                co_return static_cast<Meta>(MakeDefaultArgMetadata<Param>(std::move(maker)));
             }
             else
             {
-                E value = std::forward<Expr>(expr);
-                return detail::MakeDefaultArgMetadataAsyncFromValue<Param, Meta>(
-                    std::move(value));
+                static_assert(
+                    kAlwaysFalseV<E>,
+                    "MakeDefaultArgMetadataAsync only accepts Depends() or Depends(factory) expressions.");
             }
         }
+
     }
 
     // Shared implementation for target-scoped and global injection APIs.
@@ -430,6 +430,6 @@ namespace cpp::blackmagic
 }
 
 
-#include "internal/depends/inject.h"
+#include "internal/depends/compile/inject.h"
 
 #endif // __CPPBM_DEPENDS_H__

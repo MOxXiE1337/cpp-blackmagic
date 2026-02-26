@@ -39,12 +39,6 @@
 #include <utility>
 #include <vector>
 
-#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
-#define CPPBM_HAS_ATOMIC_SHARED_PTR 1
-#else
-#define CPPBM_HAS_ATOMIC_SHARED_PTR 0
-#endif
-
 namespace cpp::blackmagic::depends
 {
     // Pointer metadata payload generated for Depends(...) default arguments.
@@ -126,11 +120,7 @@ namespace cpp::blackmagic::depends
     public:
         using StoredAny = std::shared_ptr<const std::any>;
         using Table = std::unordered_map<ExplicitValueKey, StoredAny, ExplicitValueKeyHash>;
-#if CPPBM_HAS_ATOMIC_SHARED_PTR
-        using SnapshotStorage = std::atomic<std::shared_ptr<const Table>>;
-#else
         using SnapshotStorage = std::shared_ptr<const Table>;
-#endif
 
         ExplicitValueRegistry()
         {
@@ -269,34 +259,12 @@ namespace cpp::blackmagic::depends
     private:
         std::shared_ptr<const Table> LoadSnapshot() const
         {
-#if CPPBM_HAS_ATOMIC_SHARED_PTR
-            return snapshot_.load(std::memory_order_acquire);
-#else
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
             return std::atomic_load_explicit(&snapshot_, std::memory_order_acquire);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-#endif
         }
 
         void StoreSnapshot(std::shared_ptr<const Table> next)
         {
-#if CPPBM_HAS_ATOMIC_SHARED_PTR
-            snapshot_.store(std::move(next), std::memory_order_release);
-#else
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
             std::atomic_store_explicit(&snapshot_, std::move(next), std::memory_order_release);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-#endif
         }
 
         mutable std::mutex write_mtx_{};
@@ -310,11 +278,7 @@ namespace cpp::blackmagic::depends
     public:
         using StoredFactory = std::shared_ptr<const ErasedFactory>;
         using Table = std::unordered_map<DefaultArgKey, StoredFactory, DefaultArgKeyHash>;
-#if CPPBM_HAS_ATOMIC_SHARED_PTR
-        using SnapshotStorage = std::atomic<std::shared_ptr<const Table>>;
-#else
         using SnapshotStorage = std::shared_ptr<const Table>;
-#endif
 
         DefaultArgRegistry()
         {
@@ -353,34 +317,12 @@ namespace cpp::blackmagic::depends
     private:
         std::shared_ptr<const Table> LoadSnapshot() const
         {
-#if CPPBM_HAS_ATOMIC_SHARED_PTR
-            return snapshot_.load(std::memory_order_acquire);
-#else
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
             return std::atomic_load_explicit(&snapshot_, std::memory_order_acquire);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-#endif
         }
 
         void StoreSnapshot(std::shared_ptr<const Table> next)
         {
-#if CPPBM_HAS_ATOMIC_SHARED_PTR
-            snapshot_.store(std::move(next), std::memory_order_release);
-#else
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
             std::atomic_store_explicit(&snapshot_, std::move(next), std::memory_order_release);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-#endif
         }
 
         mutable std::mutex write_mtx_{};
@@ -655,22 +597,22 @@ namespace cpp::blackmagic::depends
 
     struct InjectRegistry
     {
-        // Register generated metadata factory with deduced metadata type.
-        template <auto Target, std::size_t Index, typename Factory>
-        static bool Register(Factory&& factory)
+        // Register generated metadata factory for a runtime-resolved target key.
+        // This is used by binder-based syntax where Target is known in Bind<...>
+        // but registration path uses a shared implementation.
+        template <std::size_t Index, typename Factory>
+        static bool RegisterAt(const void* target, Factory&& factory)
         {
             using FactoryT = std::remove_reference_t<Factory>;
             using U = std::remove_cvref_t<decltype(std::declval<FactoryT&>()())>;
-            return Register<Target, Index, U>(std::forward<Factory>(factory));
+            return RegisterAt<Index, U>(target, std::forward<Factory>(factory));
         }
 
-        // Register generated metadata factory for one default parameter:
-        // key = (Target function, parameter Index, metadata type U).
-        template <auto Target, std::size_t Index, typename U, typename Factory>
-        static bool Register(Factory&& factory)
+        template <std::size_t Index, typename U, typename Factory>
+        static bool RegisterAt(const void* target, Factory&& factory)
         {
             static_assert(!std::is_reference_v<U>,
-                "InjectRegistry::Register requires non-reference value type.");
+                "InjectRegistry::RegisterAt requires non-reference value type.");
 
             ErasedFactory erased = [fac = std::forward<Factory>(factory)]() mutable -> std::any {
                 U produced = static_cast<U>(fac());
@@ -686,13 +628,30 @@ namespace cpp::blackmagic::depends
                 }
                 };
 
-            // Metadata factories are single-entry per key.
-            // Last registration wins for identical key.
             return GetDefaultArgRegistry().Register(
-                TargetKeyOf<Target>(),
+                target,
                 Index,
                 typeid(U),
                 std::move(erased));
+        }
+
+        // Register generated metadata factory with deduced metadata type.
+        template <auto Target, std::size_t Index, typename Factory>
+        static bool Register(Factory&& factory)
+        {
+            return RegisterAt<Index>(
+                TargetKeyOf<Target>(),
+                std::forward<Factory>(factory));
+        }
+
+        // Register generated metadata factory for one default parameter:
+        // key = (Target function, parameter Index, metadata type U).
+        template <auto Target, std::size_t Index, typename U, typename Factory>
+        static bool Register(Factory&& factory)
+        {
+            return RegisterAt<Index, U>(
+                TargetKeyOf<Target>(),
+                std::forward<Factory>(factory));
         }
 
         // Resolve generated metadata by (target,index,type).
@@ -709,7 +668,5 @@ namespace cpp::blackmagic::depends
         }
     };
 }
-
-#undef CPPBM_HAS_ATOMIC_SHARED_PTR
 
 #endif // __CPPBM_DEPENDS_REGISTRY_H__

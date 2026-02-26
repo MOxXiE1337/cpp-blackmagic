@@ -20,14 +20,6 @@ include("cpp-blackmagic/scripts/cmake/preprocess.cmake")
 CPPBM_ENABLE_DECORATOR(TARGET your_target)
 ```
 
-Optional strict parser mode:
-
-```cmake
-set(CPPBM_PREPROCESS_STRICT_PARSER ON)
-```
-
-When strict mode is enabled, preprocess fails if tree-sitter C++ parsing is unavailable/fails, instead of falling back to regex matching.
-
 ## Main Concepts
 
 ### 1) Decorator Marker

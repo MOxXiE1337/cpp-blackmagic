@@ -10,7 +10,7 @@
 
 namespace cpp::blackmagic
 {
-    namespace impl
+    namespace decorator
     {
         // Decorators
         template <typename Func, typename... Args>
@@ -116,16 +116,15 @@ namespace cpp::blackmagic
         };
     }
 
-    // Auto decorator
-    // Can be used like decorator(@xxx)
+    // Function decorator
     template <auto Target>
-        requires impl::DecoratorTarget<Target>
+        requires decorator::DecoratorTarget<Target>
     class FunctionDecorator
-        : public impl::Decorator<decltype(Target)>
+        : public decorator::Decorator<decltype(Target)>
     {
     public:
         using Fn = decltype(Target);
-        using Base = impl::Decorator<Fn>;
+        using Base = decorator::Decorator<Fn>;
         static constexpr Fn kTarget = Target;
 
         FunctionDecorator() : Base(kTarget)
@@ -138,26 +137,37 @@ namespace cpp::blackmagic
             (void)this->Install();
         }
     };
+
+    // Decorator binding, to maintain decorator object lifetime
+    template <auto Target, template<auto> class DecoratorT>
+    class DecoratorBinding : private utils::NonCopyable
+    {
+    public:
+        DecoratorBinding() = default;
+    private:
+        DecoratorT<Target> decorator_{}; // actual decorator object
+    };
+
+    // Decorator binder, to be used like +logger;
+    template <template<auto> class DecoratorT>
+    class DecoratorBinder
+    {
+    public:
+        // Bind to target
+        template <auto Target>
+        auto Bind() const
+        {
+            return DecoratorBinding<Target, DecoratorT>{};
+        }
+    };
 }
 
 #endif // __CPPBM_DECORATOR_H__
 
-// Comment: to decorate a class, use design pattern XD
-
-// Use this macro to decorate a function (must enable preprocessor!)
+// Decorate a function with this macro
+// e.g. decorator(@inject, @router.get("/"))
 #define decorator(t) /* t */
 
-// Use this macro to tag a decorator class
-// Then, the decorator class can be correctly parsed with @name
-#define decorator_class(name) _Decorator_##name##_
+// Very simple helper
+#define CPPBM_DECORATOR_BINDER(decorator, name) inline constexpr ::cpp::blackmagic::DecoratorBinder<decorator> name{}
 
-// Warning: decorator macro only applies to the immediately following function.
-// No matter where the function is
-// e.g
-// class test { decorator(@test) };
-// namespace testns { void func() {} }
-
-// The decorator will be applied to testns::func!
-
-// The used decorator class will be parsed to Decorator_test
-// If you want to use decorator macro and create decorator class manually, please name the class to Decorator_classname

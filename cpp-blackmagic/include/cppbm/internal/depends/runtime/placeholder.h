@@ -15,8 +15,11 @@
 #ifndef __CPPBM_DEPENDS_PLACEHOLDER_H__
 #define __CPPBM_DEPENDS_PLACEHOLDER_H__
 
+#include <concepts>
 #include <type_traits>
 
+#include "../compile/invoke.h"
+#include "../compile/registry.h"
 #include "error.h"
 
 namespace cpp::blackmagic::depends
@@ -114,6 +117,66 @@ namespace cpp::blackmagic::depends
             return false;
         }
     }
+
+    template <typename FactoryReturn = void>
+    struct DependsMaker
+    {
+        // FactoryReturn == void  => from Depends()
+        // FactoryReturn != void  => from Depends(factory)
+        static_assert(
+            std::is_void_v<FactoryReturn> || kIsSupportedFactoryReturnV<FactoryReturn>,
+            "Depends(factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
+
+        FactoryReturn(*factory)() = nullptr;
+        bool cached = true;
+
+        template <typename U>
+            requires (!std::is_reference_v<U> && !std::is_pointer_v<U>)
+        operator U& () const
+        {
+            return DependsReferenceMarker<U&>();
+        }
+
+        template <typename U>
+            requires (!std::is_reference_v<U> && !std::is_pointer_v<U>)
+        operator U* () const
+        {
+            return DependsPointerMarker<U*>();
+        }
+
+        template <typename U>
+            requires (!std::is_reference_v<U> && !std::is_pointer_v<U>)
+        operator U() const
+        {
+            if constexpr (std::is_default_constructible_v<U>)
+            {
+                return U{};
+            }
+
+            const void* factory_key = nullptr;
+            if constexpr (!std::is_void_v<FactoryReturn>)
+            {
+                factory_key = FactoryKeyOf(factory);
+            }
+
+            const char* message = "Depends() placeholder requires default-constructible T when T is value type.";
+            if constexpr (!std::is_void_v<FactoryReturn>)
+            {
+                message = "Depends(factory) placeholder requires default-constructible U when U is value type.";
+            }
+
+            return FailInject<U>(InjectError{
+                InjectErrorCode::InvalidPlaceholder,
+                nullptr,
+                static_cast<std::size_t>(-1),
+                typeid(U),
+                factory_key,
+                message
+                });
+        }
+    };
+
 }
 
 #endif // __CPPBM_DEPENDS_PLACEHOLDER_H__

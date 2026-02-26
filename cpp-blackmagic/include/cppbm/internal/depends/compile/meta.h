@@ -13,7 +13,7 @@
 #include <type_traits>
 #include <utility>
 
-#include "factory_invoke.h"
+#include "invoke.h"
 #include "registry.h"
 
 namespace cpp::blackmagic::depends
@@ -31,33 +31,32 @@ namespace cpp::blackmagic::depends
     template <typename T>
     struct IsReferenceWrapper<std::reference_wrapper<T>> : std::true_type {};
 
-    // Forward declarations for Depends maker types.
-	// Full definitions are in depends_maker.h.
-	template <typename T>
-	struct DependsMakerWithFactory;
+    // Forward declaration for Depends maker type.
+	// Full definition is in runtime/placeholder.h.
+	template <typename FactoryReturn>
 	struct DependsMaker;
 
-    // Trait: whether type is DependsMakerWithFactory<...>.
-	template <typename T>
-	struct IsDependsMakerWithFactory : std::false_type
-	{
-		static constexpr bool kFactoryReturnsPointer = false;
-	};
-
-	template <typename T>
-	struct IsDependsMakerWithFactory<DependsMakerWithFactory<T>> : std::true_type
-	{
-		// Depends(factory): pointer-producing factory means owned pointer policy.
-		// This is determined by the factory return category itself.
-		static constexpr bool kFactoryReturnsPointer = kFactoryProducesPointerV<T>;
-	};
-
-    // Trait: whether type is plain DependsMaker (Depends() without explicit factory).
+    // Trait: whether type is DependsMaker<...>.
 	template <typename T>
 	struct IsDependsMaker : std::false_type {};
 
-    template <>
-    struct IsDependsMaker<DependsMaker> : std::true_type {};
+    template <typename FactoryReturn>
+    struct IsDependsMaker<DependsMaker<FactoryReturn>> : std::true_type {};
+
+    // Trait: whether maker carries an explicit factory.
+    template <typename T>
+    struct IsDependsFactoryMaker : std::false_type
+    {
+        static constexpr bool kFactoryReturnsPointer = false;
+    };
+
+    template <typename FactoryReturn>
+    struct IsDependsFactoryMaker<DependsMaker<FactoryReturn>>
+        : std::bool_constant<!std::is_void_v<FactoryReturn>>
+    {
+        static constexpr bool kFactoryReturnsPointer =
+            !std::is_void_v<FactoryReturn> && kFactoryProducesPointerV<FactoryReturn>;
+    };
 
     // Build pointer metadata for generated default-arg registration.
 	//
@@ -80,38 +79,25 @@ namespace cpp::blackmagic::depends
 		Raw* ptr = nullptr;
 		const void* factory = nullptr;
 		bool cached = true;
-		if constexpr (IsDependsMakerWithFactory<E>::value)
+		if constexpr (IsDependsFactoryMaker<E>::value)
 		{
-			factory = FactoryKeyOf(expr.factory);
-			cached = expr.cached;
-			// Note:
-			// We intentionally test convertibility from maker expression itself,
-			// instead of only factory return type traits. This keeps metadata path
-			// aligned with runtime conversion logic.
-			if constexpr (std::is_convertible_v<Expr&&, Raw*>)
-			{
-				ptr = static_cast<Raw*>(std::forward<Expr>(expr));
-			}
-			else if constexpr (std::is_convertible_v<Expr&&, Raw&>)
-			{
-				ptr = std::addressof(static_cast<Raw&>(std::forward<Expr>(expr)));
-			}
-			else
-			{
-				static_assert(std::is_same_v<Raw, void>,
-					"Depends(factory) expression cannot be converted to requested dependency raw type.");
-			}
+			E maker = std::forward<Expr>(expr);
+			factory = FactoryKeyOf(maker.factory);
+			cached = maker.cached;
+			decltype(auto) produced = InvokeFactory(maker.factory);
+			ptr = ConvertFactoryResult<Raw*>(std::forward<decltype(produced)>(produced));
 		}
 		else if constexpr (IsDependsMaker<E>::value)
 		{
-			cached = expr.cached;
-			if constexpr (std::is_convertible_v<Expr&&, Raw*>)
+			E maker = std::forward<Expr>(expr);
+			cached = maker.cached;
+			if constexpr (std::is_convertible_v<E&&, Raw*>)
 			{
-				ptr = static_cast<Raw*>(std::forward<Expr>(expr));
+				ptr = static_cast<Raw*>(std::forward<E>(maker));
 			}
-			else if constexpr (std::is_convertible_v<Expr&&, Raw&>)
+			else if constexpr (std::is_convertible_v<E&&, Raw&>)
 			{
-				ptr = std::addressof(static_cast<Raw&>(std::forward<Expr>(expr)));
+				ptr = std::addressof(static_cast<Raw&>(std::forward<E>(maker)));
 			}
 			else
 			{
@@ -130,8 +116,8 @@ namespace cpp::blackmagic::depends
 		//   but ownership must remain borrowed (owned = false).
 		// - factory returns Raw* => owned = true.
 		const bool owned =
-			IsDependsMakerWithFactory<E>::value &&
-			IsDependsMakerWithFactory<E>::kFactoryReturnsPointer;
+			IsDependsFactoryMaker<E>::value &&
+			IsDependsFactoryMaker<E>::kFactoryReturnsPointer;
 		return DependsPtrValue<Raw>{ ptr, owned, factory, cached };
 	}
 
@@ -143,20 +129,16 @@ namespace cpp::blackmagic::depends
 	auto MakeDefaultArgMetadata(Expr&& expr)
 	{
 		using E = RemoveCvRefT<Expr>;
-		if constexpr (IsDependsMakerWithFactory<E>::value || IsDependsMaker<E>::value)
+		if constexpr (IsDependsMaker<E>::value)
 		{
 			using Raw = DependsRawFromParamT<Param>;
 			return MakeDependsPtrValue<Raw>(std::forward<Expr>(expr));
 		}
-		else if constexpr (std::is_reference_v<Param>)
-		{
-			using Stored = std::remove_reference_t<Param>;
-			return static_cast<Stored>(std::forward<Expr>(expr));
-		}
 		else
 		{
-			using Stored = Param;
-			return static_cast<Stored>(std::forward<Expr>(expr));
+			static_assert(
+				std::is_same_v<E, void>,
+				"MakeDefaultArgMetadata only accepts Depends() or Depends(factory) expressions.");
 		}
 	}
 

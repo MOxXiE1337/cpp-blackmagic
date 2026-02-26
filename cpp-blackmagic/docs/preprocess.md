@@ -39,22 +39,13 @@ CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET my-app)
 target_link_libraries(my-app PRIVATE cpp-blackmagic)
 ```
 
-### 2) Optional strict parser mode
-By default strict mode is `OFF`.
-
-```cmake
-set(CPPBM_PREPROCESS_STRICT_PARSER ON)
-```
-
-When `ON`, preprocessing fails immediately if tree-sitter parser is unavailable or parse fails.
-
-### 3) Output behavior
+### 2) Output behavior
 - Decorator pass writes generated sources to:
   - `${CMAKE_BINARY_DIR}/cppbm-gen/<target>/<relative-source-path>`
 - Inject pass runs on those generated sources in place.
 - Final compile input is replaced by generated files.
 
-### 4) Important ordering
+### 3) Important ordering
 Call order should be:
 1. `CPPBM_ENABLE_DECORATOR`
 2. `CPPBM_ENABLE_DEPENDENCY_INJECT`
@@ -82,7 +73,6 @@ You can define these in `.vcxproj` or VS User Macros:
   <CppbmPythonExe>py</CppbmPythonExe>
   <CppbmPythonArgs>-3.9</CppbmPythonArgs>
   <CppbmScriptDir>$(MSBuildProjectDirectory)\cpp-blackmagic\scripts\</CppbmScriptDir>
-  <CppbmStrictArg>--strict-parser</CppbmStrictArg>
   <CppbmDisableFastUpToDateCheck>true</CppbmDisableFastUpToDateCheck>
 </PropertyGroup>
 ```
@@ -90,7 +80,6 @@ You can define these in `.vcxproj` or VS User Macros:
 Notes:
 - `CppbmPythonExe` default: `python`
 - `CppbmPythonArgs` default: empty
-- `CppbmStrictArg` default: `--strict-parser`
 - `CppbmDisableFastUpToDateCheck` default: `true`
 
 ### 3) Output behavior

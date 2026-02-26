@@ -12,8 +12,7 @@ add_executable(cppbm-test-depends-benchmark
     src/benchmark.cpp
 )
 
-CPPBM_ENABLE_DECORATOR(TARGET cppbm-test-depends-benchmark)
-CPPBM_ENABLE_DEPENDENCY_INJECT(TARGET cppbm-test-depends-benchmark)
+CPPBM_ENABLE_DECORATOR(TARGET cppbm-test-depends-benchmark MODULES inject)
 target_link_libraries(cppbm-test-depends-benchmark PRIVATE cpp-blackmagic)
 
 # Intentionally compile-only benchmark target:

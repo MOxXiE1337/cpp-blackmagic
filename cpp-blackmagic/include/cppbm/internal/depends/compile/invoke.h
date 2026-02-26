@@ -4,8 +4,8 @@
 // - invoke no-argument factories
 // - compute slot positions for same-type parameters
 
-#ifndef __CPPBM_DEPENDS_FACTORY_INVOKE_H__
-#define __CPPBM_DEPENDS_FACTORY_INVOKE_H__
+#ifndef __CPPBM_DEPENDS_INVOKE_H__
+#define __CPPBM_DEPENDS_INVOKE_H__
 
 #include <array>
 #include <concepts>
@@ -183,4 +183,4 @@ namespace cpp::blackmagic::depends
     }
 }
 
-#endif // __CPPBM_DEPENDS_FACTORY_INVOKE_H__
+#endif // __CPPBM_DEPENDS_INVOKE_H__
