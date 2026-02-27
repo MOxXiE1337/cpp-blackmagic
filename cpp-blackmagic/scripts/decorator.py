@@ -366,7 +366,10 @@ def _find_decorator_macros(text: str) -> List[DecoratorHit]:
 
             macro_end = k
             args_src = text[j + 1:macro_end - 1]
-            for raw_arg in _split_macro_args(args_src):
+            # Keep declaration order policy:
+            # - top to bottom across different decorator(...) markers
+            # - right to left within one decorator(a, b, c) marker
+            for raw_arg in reversed(_split_macro_args(args_src)):
                 try:
                     expr = _normalize_macro_expr(raw_arg)
                 except ValueError as e:

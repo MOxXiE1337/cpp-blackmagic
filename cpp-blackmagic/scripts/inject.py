@@ -100,6 +100,11 @@ def _binding_key(binding) -> Tuple[str, int, Tuple[str, ...]]:
     return (binding.target, count, types)
 
 
+def _format_signature_for_error(binding) -> str:
+    types = [t for t in getattr(binding, "target_param_types", [])]
+    return f"{binding.target}({', '.join(types)})"
+
+
 def _select_nodes_for_binding(nodes: List[dict], binding) -> List[dict]:
     sig = tuple(_normalize_type_text(t) for t in getattr(binding, "target_param_types", []))
     count = int(getattr(binding, "target_param_count", len(sig)))
@@ -122,6 +127,25 @@ def _build_and_validate_defaults_map(context):
     inject_bindings = [b for b in context.bindings if _is_cppbm_inject_binding(b)]
     if len(inject_bindings) == 0:
         return defaults_by_binding
+
+    # Explicitly reject duplicated @inject on the same target signature.
+    key_to_binding = {}
+    key_counts = {}
+    for binding in inject_bindings:
+        key = _binding_key(binding)
+        key_counts[key] = key_counts.get(key, 0) + 1
+        if key not in key_to_binding:
+            key_to_binding[key] = binding
+    duplicates = [key for key, count in key_counts.items() if count > 1]
+    if len(duplicates) > 0:
+        samples = ", ".join(_format_signature_for_error(key_to_binding[key]) for key in duplicates[:3])
+        suffix = ""
+        if len(duplicates) > 3:
+            suffix = f" (and {len(duplicates) - 3} more)"
+        raise RuntimeError(
+            "duplicate @inject decorator is not allowed for the same target/signature: "
+            f"{samples}{suffix}"
+        )
 
     # Validate and collect metadata only for actual @inject targets/signatures.
     # Do not scan unrelated overload sets in the same translation unit.
