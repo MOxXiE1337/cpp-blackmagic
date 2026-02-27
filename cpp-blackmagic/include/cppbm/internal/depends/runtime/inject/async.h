@@ -42,21 +42,14 @@ namespace cpp::blackmagic::depends
                 std::index_sequence_for<Args...>{});
         }
 
-        // Async equivalent of ResolveArg:
-        // - same policy as sync path
-        // - metadata is resolved via TryResolveDefaultArgForParamAsync
-        // - failures are mapped to the same error model
+        // Async slow path for placeholder arguments only.
+        // Caller guarantees arg is a Depends placeholder.
         template <std::size_t Index, typename A>
-        static Task<std::tuple_element_t<Index, std::tuple<Args...>>> ResolveArgAsync(A& arg)
+        static Task<std::tuple_element_t<Index, std::tuple<Args...>>> ResolveArgAsyncPlaceholder(A& arg)
         {
             using Declared = std::tuple_element_t<Index, std::tuple<Args...>>;
             using Raw = std::remove_cv_t<std::remove_reference_t<Declared>>;
             const void* target = TargetKeyOf<Target>();
-            if (!IsDependsPlaceholder<Declared>(arg))
-            {
-                // Non-placeholder argument: caller provided explicit value.
-                co_return static_cast<Declared>(arg);
-            }
 
             // Placeholder argument: resolve from default-arg metadata for this target/index.
             const void* resolved_factory = nullptr;
@@ -109,6 +102,20 @@ namespace cpp::blackmagic::depends
                 });
         }
 
+        // Async general entry:
+        // - non-placeholder: direct pass-through
+        // - placeholder: delegate to slow path above
+        template <std::size_t Index, typename A>
+        static Task<std::tuple_element_t<Index, std::tuple<Args...>>> ResolveArgAsyncMaybe(A& arg)
+        {
+            using Declared = std::tuple_element_t<Index, std::tuple<Args...>>;
+            if (!IsDependsPlaceholder<Declared>(arg))
+            {
+                co_return static_cast<Declared>(arg);
+            }
+            co_return co_await ResolveArgAsyncPlaceholder<Index>(arg);
+        }
+
         template <typename RTask, typename Invoker, std::size_t... I>
             requires IsTaskReturn<RTask>::value
         static RTask InvokeAsync(
@@ -122,13 +129,13 @@ namespace cpp::blackmagic::depends
             if constexpr (std::is_void_v<TaskValue>)
             {
                 co_await std::forward<Invoker>(invoker)(
-                    (co_await ResolveArgAsync<I>(std::get<I>(arg_values)))...);
+                    (co_await ResolveArgAsyncMaybe<I>(std::get<I>(arg_values)))...);
                 co_return;
             }
             else
             {
                 co_return co_await std::forward<Invoker>(invoker)(
-                    (co_await ResolveArgAsync<I>(std::get<I>(arg_values)))...);
+                    (co_await ResolveArgAsyncMaybe<I>(std::get<I>(arg_values)))...);
             }
         }
     };

@@ -35,12 +35,15 @@ template <typename R, typename... Args, R(*Target)(Args...)>
 class LoggerDecorator<Target> : public FunctionDecorator<Target>
 {
 public:
-    R Call(Args... args) override
+    bool BeforeCall(Args&... /*args*/) override
     {
-        // before
-        auto result = this->CallOriginal(args...);
-        // after
-        return result;
+        // before logic
+        return true;
+    }
+
+    void AfterCall(R& /*result*/) override
+    {
+        // after logic
     }
 };
 ```
@@ -61,7 +64,82 @@ int add(int a, int b)
 }
 ```
 
-## 3. Expression decorators (registration style)
+## 3. CallContext (per-decorator call state)
+
+Use `CallContext` only when your decorator needs per-call state shared between
+`Before...` and `After...`.
+
+### 3.1 Rules
+
+- Override `ContextSize()` to reserve context bytes for your decorator.
+- Construct and destroy your state explicitly (`std::construct_at` / `std::destroy_at`).
+- If `ContextSize()` returns `0`, `CallContext` has no usable storage.
+
+### 3.2 Example
+
+```cpp
+#include <cppbm/decorator.h>
+
+#include <chrono>
+#include <cstdint>
+#include <memory>
+
+using namespace cpp::blackmagic;
+
+template <auto Target>
+class TimingDecorator;
+
+template <typename R, typename... Args, R(*Target)(Args...)>
+class TimingDecorator<Target> : public FunctionDecorator<Target>
+{
+public:
+    struct Frame
+    {
+        std::int64_t start_ns = 0;
+    };
+
+    std::size_t ContextSize() const override
+    {
+        return sizeof(Frame);
+    }
+
+    bool BeforeCall(hook::CallContext& ctx, Args&... /*args*/) override
+    {
+        auto* frame = ctx.As<Frame>();
+        if (frame == nullptr)
+        {
+            return false;
+        }
+        std::construct_at(frame, Frame{ NowNs() });
+        return true;
+    }
+
+    void AfterCall(hook::CallContext& ctx, R& /*result*/) override
+    {
+        auto* frame = ctx.As<Frame>();
+        if (frame == nullptr)
+        {
+            return;
+        }
+        const auto elapsed_ns = NowNs() - frame->start_ns;
+        std::destroy_at(frame);
+        (void)elapsed_ns;
+    }
+
+private:
+    static std::int64_t NowNs()
+    {
+        using Clock = std::chrono::steady_clock;
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now().time_since_epoch()).count();
+    }
+};
+```
+
+Note: each dispatch invocation has isolated context storage, so nested decorated calls
+do not overwrite each other.
+
+## 4. Expression decorators (registration style)
 
 You can decorate with an expression:
 
@@ -79,7 +157,7 @@ auto Bind() const;
 
 So `router.get(...)` can return any binder-like object; return type does not need to be a decorator class.
 
-## 4. Multiple decorators on one function
+## 5. Multiple decorators on one function
 
 Supported:
 
@@ -93,23 +171,29 @@ Practical advice:
 - keep markers immediately above the function they decorate
 - avoid spreading markers far away from the target declaration/definition
 
-## 5. Common mistakes
+## 6. Common mistakes
 
-### 5.1 Preprocess not enabled
+### 6.1 Preprocess not enabled
 
 `decorator(...)` macro itself is a no-op. No preprocess means no runtime binding.
 
-### 5.2 Invalid marker syntax
+### 6.2 Invalid marker syntax
 
 Current expected form is `decorator(@xxx)`.
 
 - `@` is required
 - for multiple entries, each argument must start with `@`
 
-### 5.3 Ambiguous marker placement
+### 6.3 Ambiguous marker placement
 
 Binding is based on nearest following function node. Unclear layout can bind to an unexpected function.
 
-## 6. Reference example
+## 7. Reference examples
 
-- [decorator example](../examples/src/decorator_example.cpp)
+- [decorator example entry](../examples/src/decorator/main.cpp)
+- [basic binder case](../examples/src/decorator/case_basic.cpp)
+- [fixed target case](../examples/src/decorator/case_fixed_target.cpp)
+- [expression binder case](../examples/src/decorator/case_expression.cpp)
+- [context case](../examples/src/decorator/case_context.cpp)
+- [chain case](../examples/src/decorator/case_chain.cpp)
+- [member-function case](../examples/src/decorator/case_member.cpp)

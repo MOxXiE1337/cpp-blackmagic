@@ -73,10 +73,15 @@ template <typename R, typename... Args, R(*Target)(Args...)>
 class LoggerDecorator<Target> : public FunctionDecorator<Target>
 {
 public:
-    R Call(Args... args) override
+    bool BeforeCall(Args&... /*args*/) override
     {
-        // before / after logic
-        return this->CallOriginal(args...);
+        // before logic
+        return true;
+    }
+
+    void AfterCall(R& /*result*/) override
+    {
+        // after logic
     }
 };
 
@@ -88,6 +93,9 @@ int add(int a, int b)
     return a + b;
 }
 ```
+
+When you need per-call decorator state, use `hook::CallContext&` overloads plus `ContextSize()`.
+See `cpp-blackmagic/docs/decorator.md` for the full `CallContext` pattern.
 
 ### 5) Minimal inject example
 
@@ -119,7 +127,8 @@ const char* ReadEnv(Config& cfg = Depends(DefaultConfigFactory))
 
 ## Examples
 
-- [Decorator example](cpp-blackmagic/examples/src/decorator_example.cpp)
+- [Decorator example entry](cpp-blackmagic/examples/src/decorator/main.cpp)
+- [Decorator member-function case](cpp-blackmagic/examples/src/decorator/case_member.cpp)
 - [Depends/Inject example](cpp-blackmagic/examples/src/depends_example.cpp)
 
 ## Common Issues

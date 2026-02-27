@@ -9,7 +9,14 @@ endif ()
 include("${CPPBM_PREPROCESS_CMAKE}")
 
 add_executable(cppbm-example-decorator
-    src/decorator_example.cpp
+    src/decorator/cases.h
+    src/decorator/main.cpp
+    src/decorator/case_basic.cpp
+    src/decorator/case_fixed_target.cpp
+    src/decorator/case_expression.cpp
+    src/decorator/case_context.cpp
+    src/decorator/case_chain.cpp
+    src/decorator/case_member.cpp
 )
 
 CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-decorator)

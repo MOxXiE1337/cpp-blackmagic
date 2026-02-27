@@ -7,21 +7,12 @@
 
 #include "internal/hook/error.h"
 #include "internal/hook/hook.h"
+#include "internal/utils/noncopyable.h"
 
 namespace cpp::blackmagic
 {
     namespace decorator
     {
-        // Decorators
-        template <typename Func, typename... Args>
-        class Decorator;
-
-        // Useful concepts
-        template <typename DeclaredTuple, typename RealTuple>
-        concept ArgsCompatible =
-            std::same_as<DeclaredTuple, std::tuple<>> ||
-            std::same_as<DeclaredTuple, RealTuple>;
-
         template <typename T>
         concept FreeFunctionPointer =
             std::is_pointer_v<std::remove_cvref_t<T>> &&
@@ -35,125 +26,83 @@ namespace cpp::blackmagic
         concept DecoratorTarget =
             MemberFunctionPointer<decltype(Target)> ||
             FreeFunctionPointer<decltype(Target)>;
+    }
 
-        // Free-function specialization.
-        template <typename R, typename... RealArgs, typename... DeclaredArgs>
-            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
-        class Decorator<R(*)(RealArgs...), DeclaredArgs...>
-            : public hook::FreeHookBase<Decorator<R(*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>
+    namespace detail
+    {
+        template <auto Target, typename Fn>
+        class Decorator;
+
+        template <auto Target, typename R, typename... Args>
+        class Decorator<Target, R(*)(Args...)>
+            : public hook::FreeHookBase<Target, R, Args...>
         {
-        public:
-            using Base = hook::FreeHookBase<Decorator<R(*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>;
-            using Base::Base;
         };
 
-        // __stdcall and fastcall for msvc x86
 #ifdef _CPPBM_HOOK_WIN32
-        // __stdcall
-        template <typename R, typename... RealArgs, typename... DeclaredArgs>
-            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
-        class Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>
-            : public hook::FreeHookBaseStdcall<Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>
+        template <auto Target, typename R, typename... Args>
+        class Decorator<Target, R(__stdcall*)(Args...)>
+            : public hook::FreeHookBaseStdcall<Target, R, Args...>
         {
-        public:
-            using Base = hook::FreeHookBaseStdcall<Decorator<R(__stdcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>;
-            using Base::Base;
         };
 
-        // __fastcall
-        template <typename R, typename... RealArgs, typename... DeclaredArgs>
-            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
-        class Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>
-            : public hook::FreeHookBaseFastcall<Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>
+        template <auto Target, typename R, typename... Args>
+        class Decorator<Target, R(__fastcall*)(Args...)>
+            : public hook::FreeHookBaseFastcall<Target, R, Args...>
         {
-        public:
-            using Base = hook::FreeHookBaseFastcall<Decorator<R(__fastcall*)(RealArgs...), DeclaredArgs...>, R, RealArgs...>;
-            using Base::Base;
         };
-
 #endif // _CPPBM_HOOK_WIN32
 
-        // Non-const member-function specialization.
-        template <typename C, typename R, typename... RealArgs, typename... DeclaredArgs>
-            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
-        class Decorator<R(C::*)(RealArgs...), DeclaredArgs...>
-            : public hook::MemberHookBase<
-            Decorator<R(C::*)(RealArgs...), DeclaredArgs...>,
-            R(C::*)(RealArgs...),
-            C*,
-            R,
-            RealArgs...>
+        template <auto Target, typename C, typename R, typename... Args>
+        class Decorator<Target, R(C::*)(Args...)>
+            : public hook::MemberHookBase<Target, R(C::*)(Args...), C*, R, Args...>
         {
-        public:
-            using Base = hook::MemberHookBase<
-                Decorator<R(C::*)(RealArgs...), DeclaredArgs...>,
-                R(C::*)(RealArgs...),
-                C*,
-                R,
-                RealArgs...>;
-            using Base::Base;
         };
 
-        // Const member-function specialization.
-        template <typename C, typename R, typename... RealArgs, typename... DeclaredArgs>
-            requires ArgsCompatible<std::tuple<DeclaredArgs...>, std::tuple<RealArgs...>>
-        class Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>
-            : public hook::MemberHookBase<
-            Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>,
-            R(C::*)(RealArgs...) const,
-            const C*,
-            R,
-            RealArgs...>
+        template <auto Target, typename C, typename R, typename... Args>
+        class Decorator<Target, R(C::*)(Args...) const>
+            : public hook::MemberHookBase<Target, R(C::*)(Args...) const, const C*, R, Args...>
         {
-        public:
-            using Base = hook::MemberHookBase<
-                Decorator<R(C::*)(RealArgs...) const, DeclaredArgs...>,
-                R(C::*)(RealArgs...) const,
-                const C*,
-                R,
-                RealArgs...>;
-            using Base::Base;
         };
     }
 
-    // Function decorator
     template <auto Target>
         requires decorator::DecoratorTarget<Target>
     class FunctionDecorator
-        : public decorator::Decorator<decltype(Target)>
+        : public detail::Decorator<Target, decltype(Target)>
     {
     public:
-        using Fn = decltype(Target);
-        using Base = decorator::Decorator<Fn>;
-        static constexpr Fn kTarget = Target;
+        using Base = detail::Decorator<Target, decltype(Target)>;
 
-        FunctionDecorator() : Base(kTarget)
+        FunctionDecorator()
         {
-            (void)this->Install();
+            (void)this->RegisterDecoratorNode();
         }
 
-        explicit FunctionDecorator(Fn /*unused*/) : Base(kTarget)
+        ~FunctionDecorator()
         {
-            (void)this->Install();
+            this->UnregisterDecoratorNode();
         }
     };
 
-    // Decorator binding, to maintain decorator object lifetime
+    // Decorator binding, to maintain decorator object lifetime.
     template <auto Target, template<auto> class DecoratorT>
     class DecoratorBinding : private utils::NonCopyable
     {
     public:
         DecoratorBinding() = default;
+        ~DecoratorBinding() = default;
+
     private:
-        DecoratorT<Target> decorator_{}; // actual decorator object
+        DecoratorT<Target> decorator_{};
     };
 
-    // Decorator binder, to be used like +logger;
+    // Decorator binder, to be used like:
+    //   inline auto reg = logger.Bind<&Foo>();
     template <template<auto> class DecoratorT>
     class DecoratorBinder
     {
     public:
-        // Bind to target
         template <auto Target>
         auto Bind() const
         {
@@ -164,10 +113,9 @@ namespace cpp::blackmagic
 
 #endif // __CPPBM_DECORATOR_H__
 
-// Decorate a function with this macro
-// e.g. decorator(@inject, @router.get("/"))
+// Decorate a function with this macro:
+//   decorator(@inject, @router.get("/"))
 #define decorator(t) /* t */
 
-// Very simple helper
+// Binder declaration helper.
 #define CPPBM_DECORATOR_BINDER(decorator, name) inline constexpr ::cpp::blackmagic::DecoratorBinder<decorator> name{}
-

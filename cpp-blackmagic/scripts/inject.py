@@ -38,6 +38,13 @@ def _is_depends_default_expr(expr: str) -> bool:
     return DEPENDS_EXPR_RE.fullmatch(_normalize_default_expr(expr)) is not None
 
 
+def _wrap_sentence_in_namespace(binding, core_sentence: str) -> str:
+    ns = (getattr(binding, "namespace_scope", "") or "").strip()
+    if not ns:
+        return core_sentence
+    return f"namespace {ns} {{\n{core_sentence}\n}}"
+
+
 def _records_by_fullname(context) -> Dict[str, List[dict]]:
     out: Dict[str, List[dict]] = {}
     for node in context.cpp_function_like_nodes:
@@ -228,9 +235,10 @@ def handle(context):
             )
 
         indented_args = ",\n".join(f"    {arg}" for arg in args)
-        binding.sentence = (
+        core_sentence = (
             f"inline auto {binding.var_name} = ({binding.expr}).Bind<&{binding.target}>(\n"
             f"{indented_args}\n"
             f");"
         )
+        binding.sentence = _wrap_sentence_in_namespace(binding, core_sentence)
         print(f"[inject] bind-meta {binding.target} ({len(defaults)} args)")

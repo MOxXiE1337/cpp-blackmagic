@@ -158,6 +158,7 @@ class DecoratorBinding:
     expr: str
     source: str
     target: str
+    namespace_scope: str
     target_param_count: int
     target_param_types: List[str]
     sentence: str
@@ -368,8 +369,8 @@ def _find_decorator_macros(text: str) -> List[DecoratorHit]:
             args_src = text[j + 1:macro_end - 1]
             # Keep declaration order policy:
             # - top to bottom across different decorator(...) markers
-            # - right to left within one decorator(a, b, c) marker
-            for raw_arg in reversed(_split_macro_args(args_src)):
+            # - left to right within one decorator(a, b, c) marker
+            for raw_arg in _split_macro_args(args_src):
                 try:
                     expr = _normalize_macro_expr(raw_arg)
                 except ValueError as e:
@@ -443,6 +444,13 @@ def extract_param_type_from_lhs(lhs: str) -> str:
     return prefix
 
 
+def wrap_sentence_in_namespace(namespace_scope: str, core_sentence: str) -> str:
+    ns = (namespace_scope or "").strip()
+    if not ns:
+        return core_sentence
+    return f"namespace {ns} {{\n{core_sentence}\n}}"
+
+
 def get_function_info(func_node, code):
     declarator_node = func_node.child_by_field_name("declarator")
     if not declarator_node:
@@ -481,6 +489,7 @@ def get_function_info(func_node, code):
         func_name_text = func_name_text[2:]
 
     parent_nodes = []
+    namespace_nodes = []
     current_node = func_node.parent
     while current_node and current_node.type != "translation_unit":
         if current_node.type in ["class_specifier", "struct_specifier"]:
@@ -490,13 +499,19 @@ def get_function_info(func_node, code):
         elif current_node.type == "namespace_definition":
             ns_name_node = current_node.child_by_field_name("name")
             if ns_name_node:
-                parent_nodes.append(get_node_text(ns_name_node, code))
+                ns_name = get_node_text(ns_name_node, code)
+                parent_nodes.append(ns_name)
+                namespace_nodes.append(ns_name)
         current_node = current_node.parent
 
     scope_parts = []
     if parent_nodes:
         parent_nodes.reverse()
         scope_parts = [n for n in parent_nodes if n]
+    namespace_scope = ""
+    if namespace_nodes:
+        namespace_nodes.reverse()
+        namespace_scope = "::".join([n for n in namespace_nodes if n])
 
     if "::" in func_name_text:
         qualified_parts = [p for p in func_name_text.split("::") if p]
@@ -551,6 +566,7 @@ def get_function_info(func_node, code):
         "start": func_node.start_byte,
         "end": func_node.end_byte,
         "node_type": func_node.type,
+        "namespace_scope": namespace_scope,
         "param_count": param_index,
         "param_types": param_types,
         "param_defaults": param_defaults,
@@ -705,7 +721,9 @@ def main():
 
         var_name = f'__cppbm_dec_{func["name"]}_{dec.start}_{dec_index}'
         func_fullname = func["fullname"]
-        sentence = f'inline auto {var_name} = ({dec.expr}).Bind<&{func_fullname}>();'
+        func_namespace_scope = func.get("namespace_scope", "")
+        core_sentence = f'inline auto {var_name} = ({dec.expr}).Bind<&{func_fullname}>();'
+        sentence = wrap_sentence_in_namespace(func_namespace_scope, core_sentence)
         print(f"[decorator] reg {func_fullname} <- {dec.source}:{dec.expr}")
         context.bindings.append(
             DecoratorBinding(
@@ -713,6 +731,7 @@ def main():
                 expr=dec.expr,
                 source=dec.source,
                 target=func_fullname,
+                namespace_scope=func_namespace_scope,
                 target_param_count=func.get("param_count", 0),
                 target_param_types=list(func.get("param_types", [])),
                 sentence=sentence,
