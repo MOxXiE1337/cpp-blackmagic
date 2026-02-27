@@ -2,7 +2,7 @@
 inject module for decorator.py modular pipeline.
 
 Hook contract:
-- handle(context): rewrite generated inject Bind calls with metadata args.
+- handle(context): append InjectArgMeta metadata args into binding.meta_args.
 """
 
 import re
@@ -36,13 +36,6 @@ def _is_cppbm_inject_binding(binding) -> bool:
 
 def _is_depends_default_expr(expr: str) -> bool:
     return DEPENDS_EXPR_RE.fullmatch(_normalize_default_expr(expr)) is not None
-
-
-def _wrap_sentence_in_namespace(binding, core_sentence: str) -> str:
-    ns = (getattr(binding, "namespace_scope", "") or "").strip()
-    if not ns:
-        return core_sentence
-    return f"namespace {ns} {{\n{core_sentence}\n}}"
 
 
 def _records_by_fullname(context) -> Dict[str, List[dict]]:
@@ -211,7 +204,7 @@ def handle(context):
         return
 
     alias = "_" + secrets.token_hex(3)
-    context.generated_prefix_lines.append(f"namespace {alias} = ::cpp::blackmagic::depends;")
+    added_any_meta = False
 
     for binding in inject_bindings:
         defaults = [
@@ -234,11 +227,11 @@ def handle(context):
                 )
             )
 
-        indented_args = ",\n".join(f"    {arg}" for arg in args)
-        core_sentence = (
-            f"inline auto {binding.var_name} = ({binding.expr}).Bind<&{binding.target}>(\n"
-            f"{indented_args}\n"
-            f");"
-        )
-        binding.sentence = _wrap_sentence_in_namespace(binding, core_sentence)
+        if not hasattr(binding, "meta_args") or binding.meta_args is None:
+            binding.meta_args = []
+        binding.meta_args.extend(args)
+        added_any_meta = True
         print(f"[inject] bind-meta {binding.target} ({len(defaults)} args)")
+
+    if added_any_meta:
+        context.generated_prefix_lines.append(f"namespace {alias} = ::cpp::blackmagic::depends;")

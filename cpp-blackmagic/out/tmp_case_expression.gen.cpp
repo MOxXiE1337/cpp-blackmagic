@@ -106,7 +106,7 @@ namespace cppbm::examples::decorator
 
     inline App app{};
 
-    decorator(@app.get("/health"))
+                                  
     int HealthStatus();
 
     int HealthStatus()
@@ -119,4 +119,13 @@ namespace cppbm::examples::decorator
         std::cout << "[expression] HealthStatus() => " << HealthStatus() << "\n";
         std::cout << "[expression] app.Invoke(\"/health\") => " << app.Invoke("/health") << "\n";
     }
+}
+
+
+
+// Generated decorator bindings.
+namespace cppbm::examples::decorator {
+inline auto __cppbm_dec_HealthStatus_2580_0 = (app.get("/health")).Bind<&cppbm::examples::decorator::HealthStatus>(
+    []() { return ::cppbm::examples::decorator::HealthStatus(); }
+);
 }

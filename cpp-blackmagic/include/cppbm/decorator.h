@@ -103,9 +103,12 @@ namespace cpp::blackmagic
     class DecoratorBinder
     {
     public:
-        template <auto Target>
-        auto Bind() const
+        template <auto Target, typename... Metas>
+        auto Bind(Metas&&...) const
         {
+            // Unknown metadata is intentionally ignored by generic binder.
+            // Specialized binders (inject/router/...) can selectively consume
+            // metadata they understand.
             return DecoratorBinding<Target, DecoratorT>{};
         }
     };
@@ -115,7 +118,7 @@ namespace cpp::blackmagic
 
 // Decorate a function with this macro:
 //   decorator(@inject, @router.get("/"))
-#define decorator(t) /* t */
+#define decorator(expr) /* expr */
 
 // Binder declaration helper.
 #define CPPBM_DECORATOR_BINDER(decorator, name) inline constexpr ::cpp::blackmagic::DecoratorBinder<decorator> name{}

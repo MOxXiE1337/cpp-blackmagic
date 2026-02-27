@@ -19,7 +19,7 @@ add_executable(cppbm-example-decorator
     src/decorator/case_member.cpp
 )
 
-CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-decorator)
+CPPBM_ENABLE_DECORATOR(TARGET cppbm-example-decorator MODULES invoker)
 target_link_libraries(cppbm-example-decorator PRIVATE cpp-blackmagic)
 
 add_executable(cppbm-example-depends

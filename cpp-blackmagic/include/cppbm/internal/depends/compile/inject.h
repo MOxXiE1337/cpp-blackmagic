@@ -107,14 +107,9 @@ namespace cpp::blackmagic::depends::detail
         using ReturnType = R;
     };
 
-    template <auto Target, typename Meta>
-    bool RegisterInjectArgMeta(Meta&& meta)
+    template <auto Target, std::size_t Index, typename Param>
+    bool ApplyMeta(const InjectArgMeta<Index, Param>& meta)
     {
-        using MetaT = std::remove_cvref_t<Meta>;
-        static_assert(
-            IsInjectArgMeta<MetaT>::value,
-            "inject.Bind<&Target>(...) only accepts depends::InjectArgMeta<...> arguments.");
-
         using FnTraits = FunctionSignatureTraits<decltype(Target)>;
         constexpr bool kUseAsyncMetadata =
             IsTaskReturn<typename FnTraits::ReturnType>::value;
@@ -129,15 +124,11 @@ namespace cpp::blackmagic::depends::detail
         }
     }
 
-    template <auto Target, typename... Metas>
-    bool RegisterInjectArgMetas(Metas&&... metas)
+    template <auto Target, typename Meta>
+    bool ApplyMeta(Meta&&)
     {
-        bool ok = true;
-        auto register_one = [&ok](auto&& one) {
-            ok = RegisterInjectArgMeta<Target>(std::forward<decltype(one)>(one)) && ok;
-        };
-        (register_one(std::forward<Metas>(metas)), ...);
-        return ok;
+        // Unknown metadata is intentionally ignored by InjectBinder.
+        return true;
     }
 }
 
@@ -151,8 +142,12 @@ namespace cpp::blackmagic
         {
             if constexpr (sizeof...(Metas) > 0)
             {
-                (void)depends::detail::RegisterInjectArgMetas<Target>(
-                    std::forward<Metas>(metas)...);
+                const bool applied_all = (
+                    depends::detail::ApplyMeta<Target>(
+                        std::forward<Metas>(metas)
+                    ) && ...
+                );
+                (void)applied_all;
             }
 
             return DecoratorBinding<Target, InjectDecorator>{};

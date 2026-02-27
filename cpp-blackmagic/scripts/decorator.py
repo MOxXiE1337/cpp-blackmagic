@@ -161,6 +161,11 @@ class DecoratorBinding:
     namespace_scope: str
     target_param_count: int
     target_param_types: List[str]
+    # Additional Bind metadata arguments contributed by modules.
+    # Examples:
+    # - inject.py appends depends::InjectArgMeta<...>(...)
+    # - future router module may append an invoker meta object
+    meta_args: List[str]
     sentence: str
 
 
@@ -451,6 +456,28 @@ def wrap_sentence_in_namespace(namespace_scope: str, core_sentence: str) -> str:
     return f"namespace {ns} {{\n{core_sentence}\n}}"
 
 
+def render_binding_sentence(binding: DecoratorBinding) -> str:
+    # All modules should append strongly-typed metadata into binding.meta_args.
+    # decorator.py remains generic and always emits:
+    #   (expr).Bind<&Target>(meta1, meta2, ...)
+    # This keeps invoker/inject policies extensible without hard-coding
+    # decorator expression names in the core preprocessor.
+    if len(binding.meta_args) == 0:
+        core_sentence = (
+            f"inline auto {binding.var_name} = "
+            f"({binding.expr}).Bind<&{binding.target}>();"
+        )
+    else:
+        args = ",\n".join(f"    {arg}" for arg in binding.meta_args)
+        core_sentence = (
+            f"inline auto {binding.var_name} = "
+            f"({binding.expr}).Bind<&{binding.target}>(\n"
+            f"{args}\n"
+            ");"
+        )
+    return wrap_sentence_in_namespace(binding.namespace_scope, core_sentence)
+
+
 def get_function_info(func_node, code):
     declarator_node = func_node.child_by_field_name("declarator")
     if not declarator_node:
@@ -722,23 +749,25 @@ def main():
         var_name = f'__cppbm_dec_{func["name"]}_{dec.start}_{dec_index}'
         func_fullname = func["fullname"]
         func_namespace_scope = func.get("namespace_scope", "")
-        core_sentence = f'inline auto {var_name} = ({dec.expr}).Bind<&{func_fullname}>();'
-        sentence = wrap_sentence_in_namespace(func_namespace_scope, core_sentence)
         print(f"[decorator] reg {func_fullname} <- {dec.source}:{dec.expr}")
-        context.bindings.append(
-            DecoratorBinding(
-                var_name=var_name,
-                expr=dec.expr,
-                source=dec.source,
-                target=func_fullname,
-                namespace_scope=func_namespace_scope,
-                target_param_count=func.get("param_count", 0),
-                target_param_types=list(func.get("param_types", [])),
-                sentence=sentence,
-            )
+        binding = DecoratorBinding(
+            var_name=var_name,
+            expr=dec.expr,
+            source=dec.source,
+            target=func_fullname,
+            namespace_scope=func_namespace_scope,
+            target_param_count=func.get("param_count", 0),
+            target_param_types=list(func.get("param_types", [])),
+            meta_args=[],
+            sentence="",
         )
+        binding.sentence = render_binding_sentence(binding)
+        context.bindings.append(binding)
 
     run_handle_modules(loaded_modules, context)
+
+    for binding in context.bindings:
+        binding.sentence = render_binding_sentence(binding)
 
     if len(context.bindings) > 0 or len(context.generated_prefix_lines) > 0 or len(context.generated_suffix_lines) > 0:
         masked += "\n\n\n// Generated decorator bindings.\n"
