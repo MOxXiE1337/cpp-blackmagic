@@ -176,11 +176,19 @@ namespace cpp::blackmagic
 
     }
 
-    // Shared implementation for target-scoped and global injection APIs.
+    // Bind one inject-context scope to current execution path.
+    // Use this when you need to inject overrides before entering @inject target.
+    inline auto BeginInjectContext()
+    {
+        return depends::ScopedInjectContext{};
+    }
+
+    // Shared implementation for context-scoped explicit injection APIs.
     //
     // Explicit injection policy:
     // - accepted: T* or std::reference_wrapper<T>
     // - treated as borrowed only
+    // - stored in current active inject context (never process-global)
     template <typename T>
     bool InjectDependencyAt(const void* target, const void* factory, T&& value)
     {
@@ -191,8 +199,13 @@ namespace cpp::blackmagic
         static_assert(kSupportedHandle,
             "InjectDependency(value) only accepts pointer/reference-wrapper values.");
 
+        if (!depends::HasBoundInjectState())
+        {
+            return false;
+        }
+
         U captured = std::forward<T>(value);
-        return depends::RegisterExplicitValue<U>(target, factory, std::move(captured));
+        return depends::RegisterExplicitOverride<U>(target, factory, std::move(captured));
     }
 
     template <typename T>
@@ -208,6 +221,18 @@ namespace cpp::blackmagic
             "InjectDependency(value, factory): factory return type must be pointer/reference "
             "or task-like with Get() resolving to pointer/reference.");
         return InjectDependencyAt(target, depends::FactoryKeyOf(factory), std::forward<T>(value));
+    }
+
+    template <typename T>
+    bool InjectDependencyByTargetKey(const void* target_key, T&& value)
+    {
+        return InjectDependencyAt(target_key, std::forward<T>(value));
+    }
+
+    template <typename T, typename FactoryReturn>
+    bool InjectDependencyByTargetKey(const void* target_key, T&& value, FactoryReturn(*factory)())
+    {
+        return InjectDependencyAt(target_key, std::forward<T>(value), factory);
     }
 
     // Target-scoped explicit injection:
@@ -226,37 +251,54 @@ namespace cpp::blackmagic
         return InjectDependencyAt(depends::TargetKeyOf<Target>(), std::forward<T>(value), factory);
     }
 
-    // Global explicit injection fallback (target == nullptr).
+    // Context-wide explicit injection fallback (target == nullptr in current context only).
 	template <typename T>
 	bool InjectDependency(T&& value)
 	{
 		return InjectDependencyAt(nullptr, std::forward<T>(value));
 	}
 
-    // Global explicit injection bound to Depends(factory).
+    // Context-wide explicit injection bound to Depends(factory).
     template <typename T, typename FactoryReturn>
     bool InjectDependency(T&& value, FactoryReturn(*factory)())
     {
         return InjectDependencyAt(nullptr, std::forward<T>(value), factory);
     }
 
-    // Clear all explicit injected values (all targets/factories/types).
+    // Clear all explicit injected values in current active context.
     inline std::size_t ClearDependencies()
     {
-        return depends::ClearExplicitValues();
+        if (!depends::HasBoundInjectState())
+        {
+            return 0;
+        }
+        return depends::ClearExplicitOverrides();
     }
 
-    // Clear explicit injected values for one target only.
+    // Clear explicit injected values for one target key in current active context.
+    inline std::size_t ClearDependenciesByTargetKey(const void* target_key)
+    {
+        if (!depends::HasBoundInjectState())
+        {
+            return 0;
+        }
+        return depends::ClearExplicitOverridesForTarget(target_key);
+    }
+
     template <auto Target>
     std::size_t ClearDependencies()
     {
-        return depends::ClearExplicitValuesForTarget(depends::TargetKeyOf<Target>());
+        return ClearDependenciesByTargetKey(depends::TargetKeyOf<Target>());
     }
 
-    // Remove one explicit injected value by exact key.
+    // Remove one explicit injected value by exact key in current active context.
     inline bool RemoveDependencyAt(const void* target, const void* factory, std::type_index type)
     {
-        return depends::RemoveExplicitValue(target, factory, type);
+        if (!depends::HasBoundInjectState())
+        {
+            return false;
+        }
+        return depends::RemoveExplicitOverride(target, factory, type);
     }
 
     template <typename T>
@@ -265,7 +307,11 @@ namespace cpp::blackmagic
         using U = std::remove_cvref_t<T>;
         static_assert(kIsSupportedDependencyHandleV<U>,
             "RemoveDependency<T> requires T to be pointer or std::reference_wrapper.");
-        return depends::RemoveExplicitValueTyped<U>(nullptr, nullptr);
+        if (!depends::HasBoundInjectState())
+        {
+            return false;
+        }
+        return depends::RemoveExplicitOverrideTyped<U>(nullptr, nullptr);
     }
 
     template <typename T, typename FactoryReturn>
@@ -277,7 +323,11 @@ namespace cpp::blackmagic
         static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
             "RemoveDependency<T>(factory): factory return type must be pointer/reference "
             "or task-like with Get() resolving to pointer/reference.");
-        return depends::RemoveExplicitValueTyped<U>(nullptr, depends::FactoryKeyOf(factory));
+        if (!depends::HasBoundInjectState())
+        {
+            return false;
+        }
+        return depends::RemoveExplicitOverrideTyped<U>(nullptr, depends::FactoryKeyOf(factory));
     }
 
     template <auto Target, typename T>
@@ -286,7 +336,11 @@ namespace cpp::blackmagic
         using U = std::remove_cvref_t<T>;
         static_assert(kIsSupportedDependencyHandleV<U>,
             "RemoveDependency<Target, T> requires T to be pointer or std::reference_wrapper.");
-        return depends::RemoveExplicitValueTyped<U>(depends::TargetKeyOf<Target>(), nullptr);
+        if (!depends::HasBoundInjectState())
+        {
+            return false;
+        }
+        return depends::RemoveExplicitOverrideTyped<U>(depends::TargetKeyOf<Target>(), nullptr);
     }
 
     template <auto Target, typename T, typename FactoryReturn>
@@ -298,7 +352,11 @@ namespace cpp::blackmagic
         static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
             "RemoveDependency<Target, T>(factory): factory return type must be pointer/reference "
             "or task-like with Get() resolving to pointer/reference.");
-        return depends::RemoveExplicitValueTyped<U>(
+        if (!depends::HasBoundInjectState())
+        {
+            return false;
+        }
+        return depends::RemoveExplicitOverrideTyped<U>(
             depends::TargetKeyOf<Target>(),
             depends::FactoryKeyOf(factory));
     }
@@ -308,16 +366,20 @@ namespace cpp::blackmagic
     {
     public:
         ScopedDependencyOverride(const void* target, const void* factory, U value)
-            : target_(target), factory_(factory), had_previous_(false), active_(true)
+            : context_scope_(),
+            target_(target),
+            factory_(factory),
+            had_previous_(false),
+            active_(true)
         {
             static_assert(kIsSupportedDependencyHandleV<U>,
                 "ScopedDependencyOverride<U> requires U to be pointer or std::reference_wrapper.");
-            if (auto old = depends::FindExplicitValueExactTyped<U>(target_, factory_))
+            if (auto old = depends::FindExplicitOverrideExactTyped<U>(target_, factory_))
             {
                 previous_ = std::move(*old);
                 had_previous_ = true;
             }
-            (void)depends::RegisterExplicitValue<U>(target_, factory_, std::move(value));
+            (void)depends::RegisterExplicitOverride<U>(target_, factory_, std::move(value));
         }
 
         ~ScopedDependencyOverride()
@@ -329,7 +391,8 @@ namespace cpp::blackmagic
         ScopedDependencyOverride& operator=(const ScopedDependencyOverride&) = delete;
 
         ScopedDependencyOverride(ScopedDependencyOverride&& rhs) noexcept
-            : target_(rhs.target_),
+            : context_scope_(std::move(rhs.context_scope_)),
+            target_(rhs.target_),
             factory_(rhs.factory_),
             had_previous_(rhs.had_previous_),
             previous_(std::move(rhs.previous_)),
@@ -338,20 +401,7 @@ namespace cpp::blackmagic
             rhs.active_ = false;
         }
 
-        ScopedDependencyOverride& operator=(ScopedDependencyOverride&& rhs) noexcept
-        {
-            if (this != &rhs)
-            {
-                Restore();
-                target_ = rhs.target_;
-                factory_ = rhs.factory_;
-                had_previous_ = rhs.had_previous_;
-                previous_ = std::move(rhs.previous_);
-                active_ = rhs.active_;
-                rhs.active_ = false;
-            }
-            return *this;
-        }
+        ScopedDependencyOverride& operator=(ScopedDependencyOverride&& rhs) noexcept = delete;
 
     private:
         void Restore() noexcept
@@ -362,15 +412,16 @@ namespace cpp::blackmagic
             }
             if (had_previous_ && previous_.has_value())
             {
-                (void)depends::RegisterExplicitValue<U>(target_, factory_, std::move(*previous_));
+                (void)depends::RegisterExplicitOverride<U>(target_, factory_, std::move(*previous_));
             }
             else
             {
-                (void)depends::RemoveExplicitValueTyped<U>(target_, factory_);
+                (void)depends::RemoveExplicitOverrideTyped<U>(target_, factory_);
             }
             active_ = false;
         }
 
+        depends::ScopedInjectContext context_scope_{};
         const void* target_ = nullptr;
         const void* factory_ = nullptr;
         bool had_previous_ = false;
@@ -397,6 +448,27 @@ namespace cpp::blackmagic
             "ScopeOverrideDependency(value, factory): factory return type must be pointer/reference "
             "or task-like with Get() resolving to pointer/reference.");
         return ScopedDependencyOverride<U>{ nullptr, depends::FactoryKeyOf(factory), std::forward<T>(value) };
+    }
+
+    template <typename T>
+    auto ScopeOverrideDependencyByTargetKey(const void* target_key, T&& value)
+    {
+        using U = std::remove_cvref_t<T>;
+        static_assert(kIsSupportedDependencyHandleV<U>,
+            "ScopeOverrideDependencyByTargetKey(value) requires pointer/reference-wrapper value.");
+        return ScopedDependencyOverride<U>{ target_key, nullptr, std::forward<T>(value) };
+    }
+
+    template <typename T, typename FactoryReturn>
+    auto ScopeOverrideDependencyByTargetKey(const void* target_key, T&& value, FactoryReturn(*factory)())
+    {
+        using U = std::remove_cvref_t<T>;
+        static_assert(kIsSupportedDependencyHandleV<U>,
+            "ScopeOverrideDependencyByTargetKey(value, factory) requires pointer/reference-wrapper value.");
+        static_assert(depends::kIsSupportedFactoryReturnV<FactoryReturn>,
+            "ScopeOverrideDependencyByTargetKey(value, factory): factory return type must be pointer/reference "
+            "or task-like with Get() resolving to pointer/reference.");
+        return ScopedDependencyOverride<U>{ target_key, depends::FactoryKeyOf(factory), std::forward<T>(value) };
     }
 
     template <auto Target, typename T>

@@ -53,8 +53,8 @@ namespace cpp::blackmagic::depends
                         ptr_meta.factory == nullptr
                         && IsDependsPlaceholder<Raw*>(ptr_meta.ptr);
 
-                    // Highest priority: explicit override registry for exact key.
-                    if (TryPopulateRawSlotFromExplicit<Raw>(target, ptr_meta.factory))
+                    // Highest priority: context override table for exact key.
+                    if (TryPopulateRawSlotFromOverride<Raw>(target, ptr_meta.factory))
                     {
                         if constexpr (WriteOut)
                         {
@@ -186,6 +186,31 @@ namespace cpp::blackmagic::depends
             }
 
             co_return false;
+        }
+
+        // Metadata fallback for plain Depends() style placeholders:
+        // if generated metadata is unavailable at runtime, keep pointer/reference
+        // paths usable by resolving from default-constructible slot.
+        if constexpr (std::is_reference_v<A>)
+        {
+            using RefRaw = std::remove_cv_t<std::remove_reference_t<A>>;
+            auto* slot = EnsureRawSlot<RefRaw>(target, true, nullptr, true);
+            if (slot != nullptr && slot->obj != nullptr)
+            {
+                set_factory(nullptr);
+                co_return true;
+            }
+        }
+        else if constexpr (std::is_pointer_v<Param>)
+        {
+            using Pointee = std::remove_cv_t<std::remove_pointer_t<Param>>;
+            auto* slot = EnsureRawSlot<Pointee>(target, true, nullptr, true);
+            if (slot != nullptr && slot->obj != nullptr)
+            {
+                out = static_cast<Param>(slot->obj);
+                set_factory(nullptr);
+                co_return true;
+            }
         }
 
         // Fallback to sync metadata resolver for backward compatibility.

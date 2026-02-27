@@ -69,38 +69,66 @@ Depends(true);   // default, may reuse existing context slot
 Depends(false);  // force fresh resolve
 ```
 
-## 4. Runtime overrides (tests and local scopes)
+## 4. Runtime overrides (context-scoped)
 
-### 4.1 Global override
+Overrides are **not global**.
+They apply to the current inject context only.
+
+### 4.1 Enter an inject context explicitly
+
+```cpp
+auto ctx = BeginInjectContext();
+```
+
+Use this when you need to inject values before the `@inject` function is entered.
+
+### 4.2 Context-wide override (current context only)
 
 ```cpp
 Config cfg{ "local" };
 auto guard = ScopeOverrideDependency(&cfg, DefaultConfigFactory);
 ```
 
-### 4.2 Target-specific override
+### 4.3 Target-specific override
 
 ```cpp
 Config cfg{ "staging" };
 auto guard = ScopeOverrideDependency<&ReadEnv>(&cfg, DefaultConfigFactory);
 ```
 
-Overrides are restored automatically when guard is destroyed.
+### 4.4 Dynamic target key override
+
+```cpp
+const void* key = depends::TargetKeyOf<&ReadEnv>();
+auto guard = ScopeOverrideDependencyByTargetKey(key, &cfg, DefaultConfigFactory);
+```
+
+All overrides are restored automatically when guard is destroyed.
+`ScopeOverrideDependency*` internally binds an inject context scope for the guard lifetime.
 
 ## 5. Explicit registration APIs
 
-You can register values directly:
+You can inject values directly into the currently bound context:
 
 ```cpp
+auto ctx = BeginInjectContext();
 InjectDependency(&cfg);
 InjectDependency<&ReadEnv>(&cfg, DefaultConfigFactory);
 ```
 
-Cleanup APIs:
+Dynamic target-key variant:
+
+```cpp
+const void* key = depends::TargetKeyOf<&ReadEnv>();
+InjectDependencyByTargetKey(key, &cfg, DefaultConfigFactory);
+```
+
+Cleanup APIs (current context only):
 
 ```cpp
 ClearDependencies();
 ClearDependencies<&ReadEnv>();
+ClearDependenciesByTargetKey(depends::TargetKeyOf<&ReadEnv>());
 ```
 
 ## 6. Async usage
@@ -125,6 +153,7 @@ Recommendation:
 - keep factories as no-arg function pointers
 - if one type has multiple providers, prefer `Depends(factory)` to partition keys
 - use `ScopeOverrideDependency` in tests for safe rollback
+- call `BeginInjectContext()` before manual `InjectDependency*` when not already inside an inject context
 
 ## 8. Troubleshooting
 
@@ -139,6 +168,7 @@ Check:
 
 Common causes:
 
+- no active inject context when calling `InjectDependency*` (returns `false`)
 - wrong target key (`&ReadEnv` vs another function)
 - wrong factory key (must match `Depends(factory)` declaration)
 - cache reuse (`cached=true`) hitting existing slot

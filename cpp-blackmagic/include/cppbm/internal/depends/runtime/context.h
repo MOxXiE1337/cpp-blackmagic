@@ -12,6 +12,7 @@
 
 #include <cassert>
 #include <algorithm>
+#include <any>
 #include <memory>
 #include <typeindex>
 #include <unordered_map>
@@ -76,6 +77,7 @@ namespace cpp::blackmagic::depends
     {
         InjectContext root{};
         std::vector<InjectContext*> context_stack{};
+        std::unordered_map<ExplicitValueKey, std::any, ExplicitValueKeyHash> explicit_overrides{};
         int execute_depends_depth = 0;
         int inject_call_depth = 0;
 
@@ -91,6 +93,7 @@ namespace cpp::blackmagic::depends
         state.root.slots.clear();
         state.context_stack.clear();
         state.context_stack.push_back(&state.root);
+        state.explicit_overrides.clear();
         state.execute_depends_depth = 0;
         state.inject_call_depth = 0;
     }
@@ -122,6 +125,11 @@ namespace cpp::blackmagic::depends
             return GetAmbientStateOwner();
         }
         return *maybe;
+    }
+
+    inline bool HasBoundInjectState()
+    {
+        return ActiveInjectStateVar().HasValue();
     }
 
     inline InjectContextState& GetActiveState()
@@ -358,14 +366,15 @@ namespace cpp::blackmagic::depends
 
     inline std::shared_ptr<InjectContextState> AcquireInjectCallStateOwner()
     {
-        auto state = GetActiveStateOwner();
-        if (!state || state->inject_call_depth <= 0)
+        if (auto maybe = ActiveInjectStateVar().Get(); maybe && *maybe)
         {
-            // Top-level @inject call (not inside another @inject scope):
-            // use isolated state root so sibling requests do not share caches.
-            state = AcquireReusableTopLevelInjectStateOwner();
+            // An explicit context is already bound on this execution path
+            // (e.g. BeginInjectContext / task-bound context): always reuse it.
+            return *maybe;
         }
-        return state;
+        // Top-level @inject call without pre-bound context:
+        // use isolated state root so sibling requests do not share caches.
+        return AcquireReusableTopLevelInjectStateOwner();
     }
 
     inline InjectContextLease AcquireInjectCallLease()
@@ -397,6 +406,43 @@ namespace cpp::blackmagic::depends
     {
         return GetActiveStateOwner();
     }
+
+    // Public-facing context guard:
+    // binds one inject state to current execution path (contextvar token-based),
+    // so manual overrides added before entering @inject are visible to that call.
+    class ScopedInjectContext
+    {
+    public:
+        ScopedInjectContext()
+            : state_(AcquireInjectContextStateOwner()),
+            active_(state_)
+        {
+        }
+
+        ScopedInjectContext(const ScopedInjectContext&) = delete;
+        ScopedInjectContext& operator=(const ScopedInjectContext&) = delete;
+
+        ScopedInjectContext(ScopedInjectContext&&) noexcept = default;
+        ScopedInjectContext& operator=(ScopedInjectContext&&) noexcept = delete;
+
+        std::shared_ptr<InjectContextState> StateOwner() const
+        {
+            return state_;
+        }
+
+    private:
+        static std::shared_ptr<InjectContextState> AcquireInjectContextStateOwner()
+        {
+            if (auto maybe = ActiveInjectStateVar().Get(); maybe && *maybe)
+            {
+                return *maybe;
+            }
+            return AcquireReusableTopLevelInjectStateOwner();
+        }
+
+        std::shared_ptr<InjectContextState> state_{};
+        ActiveInjectStateScope active_;
+    };
 
     namespace detail
     {
@@ -562,24 +608,124 @@ namespace cpp::blackmagic::depends
         CacheRawSlot<T>(ptr, std::move(holder), factory);
     }
 
-    template <typename U>
-    [[nodiscard]] std::optional<U> TryResolveExplicitValue(const void* target, const void* factory = nullptr)
+    inline const std::any* FindExplicitOverrideAny(
+        const void* target,
+        const void* factory,
+        std::type_index type)
     {
-        auto value = FindExplicitValue(target, factory, typeid(U));
-        if (!value)
+        auto& table = GetActiveState().explicit_overrides;
+        const auto lookup_exact = [&](const void* in_target, const void* in_factory) -> const std::any* {
+            auto it = table.find(ExplicitValueKey{ in_target, in_factory, type });
+            if (it == table.end())
+            {
+                return nullptr;
+            }
+            return std::addressof(it->second);
+            };
+
+        if (const auto* exact = lookup_exact(target, factory); exact != nullptr)
         {
-            return std::nullopt;
+            return exact;
         }
-        return AnyTo<U>(*value);
+        if (target != nullptr)
+        {
+            if (const auto* fallback = lookup_exact(nullptr, factory); fallback != nullptr)
+            {
+                return fallback;
+            }
+        }
+        return nullptr;
+    }
+
+    inline const std::any* FindExplicitOverrideAnyExact(
+        const void* target,
+        const void* factory,
+        std::type_index type)
+    {
+        auto& table = GetActiveState().explicit_overrides;
+        auto it = table.find(ExplicitValueKey{ target, factory, type });
+        if (it == table.end())
+        {
+            return nullptr;
+        }
+        return std::addressof(it->second);
+    }
+
+    template <typename U>
+    bool RegisterExplicitOverride(const void* target, const void* factory, U&& value)
+    {
+        auto& table = GetActiveState().explicit_overrides;
+        table[ExplicitValueKey{ target, factory, typeid(std::remove_cvref_t<U>) }] =
+            std::any(std::forward<U>(value));
+        return true;
+    }
+
+    inline std::size_t ClearExplicitOverrides()
+    {
+        auto& table = GetActiveState().explicit_overrides;
+        const std::size_t removed = table.size();
+        table.clear();
+        return removed;
+    }
+
+    inline std::size_t ClearExplicitOverridesForTarget(const void* target)
+    {
+        auto& table = GetActiveState().explicit_overrides;
+        std::size_t removed = 0;
+        for (auto it = table.begin(); it != table.end(); )
+        {
+            if (it->first.target == target)
+            {
+                it = table.erase(it);
+                ++removed;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        return removed;
+    }
+
+    inline bool RemoveExplicitOverride(const void* target, const void* factory, std::type_index type)
+    {
+        auto& table = GetActiveState().explicit_overrides;
+        return table.erase(ExplicitValueKey{ target, factory, type }) > 0;
+    }
+
+    template <typename U>
+    std::optional<U> FindExplicitOverrideExactTyped(const void* target, const void* factory)
+    {
+        if (const auto* value = FindExplicitOverrideAnyExact(target, factory, typeid(U)); value != nullptr)
+        {
+            return AnyTo<U>(*value);
+        }
+        return std::nullopt;
+    }
+
+    template <typename U>
+    bool RemoveExplicitOverrideTyped(const void* target, const void* factory)
+    {
+        return RemoveExplicitOverride(target, factory, typeid(U));
+    }
+
+    template <typename U>
+    [[nodiscard]] std::optional<U> TryResolveExplicitOverride(const void* target, const void* factory = nullptr)
+    {
+        if (const auto* value = FindExplicitOverrideAny(target, factory, typeid(U)); value != nullptr)
+        {
+            return AnyTo<U>(*value);
+        }
+        return std::nullopt;
     }
 
     template <typename T>
-    bool TryPopulateRawSlotFromExplicit(const void* target, const void* factory = nullptr)
+    bool TryPopulateRawSlotFromOverride(const void* target, const void* factory = nullptr)
     {
         // Explicit injection is borrowed-only:
         // 1) std::reference_wrapper<T>
         // 2) T*
-        if (auto ref = TryResolveExplicitValue<std::reference_wrapper<T>>(target, factory))
+        if (auto ref = TryResolveExplicitOverride<std::reference_wrapper<T>>(target, factory))
         {
             CacheBorrowedRaw<T>(std::addressof(ref->get()), factory);
             return true;
@@ -587,7 +733,7 @@ namespace cpp::blackmagic::depends
 
         if constexpr (!std::is_pointer_v<T>)
         {
-            if (auto raw = TryResolveExplicitValue<T*>(target, factory); raw && *raw)
+            if (auto raw = TryResolveExplicitOverride<T*>(target, factory); raw && *raw)
             {
                 CacheBorrowedRaw<T>(*raw, factory);
                 return true;

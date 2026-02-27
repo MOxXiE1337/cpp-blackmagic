@@ -125,6 +125,7 @@ namespace cpp::blackmagic::depends::detail
     }
 
     template <auto Target, typename Meta>
+        requires (!IsInjectArgMeta<std::remove_cvref_t<Meta>>::value)
     bool ApplyMeta(Meta&&)
     {
         // Unknown metadata is intentionally ignored by InjectBinder.
