@@ -134,23 +134,20 @@ namespace cpp::blackmagic::depends::detail
 
 namespace cpp::blackmagic
 {
-    class InjectBinder
+    class InjectBinder : private DecoratorBinder<InjectDecorator>
     {
+        using Base = DecoratorBinder<InjectDecorator>;
     public:
+
         template <auto Target, typename... Metas>
         auto Bind(Metas&&... metas) const
         {
-            if constexpr (sizeof...(Metas) > 0)
-            {
-                const bool applied_all = (
-                    depends::detail::ApplyMeta<Target>(
-                        std::forward<Metas>(metas)
-                    ) && ...
-                );
-                (void)applied_all;
-            }
-
-            return DecoratorBinding<Target, InjectDecorator>{};
+            const bool applied_all = (
+                depends::detail::ApplyMeta<Target>(std::forward<Metas>(metas)) && ...
+            );
+            (void)applied_all;
+    
+            return Base::template Bind<Target>();
         }
     };
 

@@ -13,6 +13,7 @@ If you want logging, tracing, route registration, or runtime dependency override
 - Use expression-based decorators: `decorator(@router.get("/health"))`
 - Inject default dependencies: `decorator(@inject)` + `Depends(...)`
 - Override dependencies in tests: `ScopeOverrideDependency(...)`
+- Use coroutine task type directly: include `cppbm/task.h` and use `cpp::blackmagic::Task<T>`
 
 ## Quick Start
 
@@ -42,6 +43,12 @@ CPPBM_ENABLE_DECORATOR(TARGET my_app)
 
 # For @inject, enable module "inject"
 # CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject)
+#
+# For default-call invoker metadata generation, add module "invoker"
+# CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES invoker)
+#
+# Combine modules as needed
+# CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject invoker)
 
 target_link_libraries(my_app PRIVATE cpp-blackmagic)
 ```
@@ -96,6 +103,22 @@ int add(int a, int b)
 
 When you need per-call decorator state, use `hook::CallContext&` overloads plus `ContextSize()`.
 See `cpp-blackmagic/docs/decorator.md` for the full `CallContext` pattern.
+
+### 4.1) Bind metadata behavior (`Bind<&Target>(metas...)`)
+
+Generated binding code can pass metadata arguments into `Bind`:
+
+```cpp
+inline auto reg = (expr).Bind<&Target>(meta1, meta2, ...);
+```
+
+Metadata is consumed selectively by each binder:
+
+- `InjectBinder` consumes `depends::InjectArgMeta<...>`
+- route-style binders can consume invoker metadata (for example, a no-arg lambda invoker)
+- unknown metadata is ignored by generic binders
+
+This allows multiple modules to append metadata without forcing every binder to use every argument.
 
 ### 5) Minimal inject example
 

@@ -157,6 +157,28 @@ auto Bind() const;
 
 So `router.get(...)` can return any binder-like object; return type does not need to be a decorator class.
 
+### 4.1 Bind metadata (`Bind<&Target>(metas...)`)
+
+Binders may optionally accept metadata arguments:
+
+```cpp
+template <auto Target, typename... Metas>
+auto Bind(Metas&&... metas) const;
+```
+
+Preprocess modules can append metadata to one `Bind` call. Typical examples:
+
+- inject metadata: `depends::InjectArgMeta<Index, Param>(...)`
+- invoker metadata: `[]() { return ::QualifiedTarget(); }`
+
+Consumption is binder-specific:
+
+- `InjectBinder` only applies inject metadata and ignores unknown metadata.
+- route-style binders can pick invoker metadata and ignore the rest.
+- generic `DecoratorBinder` ignores metadata by default.
+
+This allows mixed usage such as `decorator(@inject, @router.get("/x"))` without forcing one binder to parse all metadata kinds.
+
 ## 5. Multiple decorators on one function
 
 Supported:

@@ -4,6 +4,7 @@ Decorator and inject behavior depends on preprocess scripts.
 
 - `decorator.py`: handles `decorator(@...)`
 - `inject.py`: loaded as a module via `decorator.py --modules inject`
+- `invoker.py`: optional module that appends default-call invoker metadata
 
 Without preprocess, `decorator(...)` is just a marker macro.
 
@@ -42,6 +43,15 @@ CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject)
 ```cmake
 CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject your_module)
 ```
+
+Practical example:
+
+```cmake
+CPPBM_ENABLE_DECORATOR(TARGET my_app MODULES inject invoker)
+```
+
+`invoker` is useful for route-style binders that accept invoker metadata and
+want preprocess to provide a default no-arg invoker for eligible targets.
 
 ## 3. MSBuild integration
 

@@ -14,19 +14,14 @@
 // - coroutine-aware invoke path for Task-returning targets
 
 #include "decorator.h"
+#include "task.h"
 #include "internal/depends/runtime/error.h"
 #include "internal/depends/compile/meta.h"
 #include "internal/depends/runtime/placeholder.h"
 #include "internal/depends/runtime/context.h"
-#include "internal/depends/runtime/coroutine/task.h"
 
 namespace cpp::blackmagic
 {
-    // Public task alias is exported from top-level API header,
-    // not from internal coroutine implementation headers.
-    template <typename T = void>
-    using Task = depends::Task<T>;
-
     template <typename T>
     inline constexpr bool kIsSupportedDependencyHandleV =
         std::is_pointer_v<std::remove_cvref_t<T>>
