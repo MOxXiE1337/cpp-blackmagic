@@ -15,6 +15,10 @@
     <CppbmDecoratorScript Condition="'$(CppbmDecoratorScript)'==''">$(CppbmScriptDir)decorator.py</CppbmDecoratorScript>
     <CppbmDecoratorArgs Condition="'$(CppbmDecoratorArgs)'==''"></CppbmDecoratorArgs>
     <CppbmModules Condition="'$(CppbmModules)'==''"></CppbmModules>
+    <CppbmLineMapEnable Condition="'$(CppbmLineMapEnable)'==''">true</CppbmLineMapEnable>
+    <CppbmLineMapScript Condition="'$(CppbmLineMapScript)'==''">$(MSBuildThisFileDirectory)line_map.py</CppbmLineMapScript>
+    <CppbmLineMapArgs Condition="'$(CppbmLineMapArgs)'==''"></CppbmLineMapArgs>
+    <CppbmLineMapMarker Condition="'$(CppbmLineMapMarker)'==''">// Generated decorator bindings.</CppbmLineMapMarker>
     <CppbmDisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'==''">true</CppbmDisableFastUpToDateCheck>
     <DisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'=='true'">true</DisableFastUpToDateCheck>
   </PropertyGroup>
@@ -29,8 +33,11 @@
       <CppbmInput Include="@(ClCompile)">
         <CppbmSourceDir>$(ProjectDir)%(RelativeDir)</CppbmSourceDir>
         <CppbmGenOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.gen.cpp'))</CppbmGenOut>
+        <CppbmMapOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.map.cpp'))</CppbmMapOut>
+        <CppbmCompileOut Condition="'$(CppbmLineMapEnable)'=='true'">$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.map.cpp'))</CppbmCompileOut>
+        <CppbmCompileOut Condition="'$(CppbmLineMapEnable)'!='true'">$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.gen.cpp'))</CppbmCompileOut>
       </CppbmInput>
-      <CppbmInput Remove="**\*.cppbm.gen.cpp;**\*.cppbm.decor.cpp" />
+      <CppbmInput Remove="**\*.cppbm.gen.cpp;**\*.cppbm.map.cpp;**\*.cppbm.decor.cpp" />
       <!-- Keep header units on the native MSBuild path; only preprocess implementation files. -->
       <CppbmInput Remove="**\*.h;**\*.hh;**\*.hpp;**\*.hxx;**\*.ixx" />
     </ItemGroup>
@@ -53,10 +60,23 @@
           StandardErrorImportance="High" />
   </Target>
 
+  <Target Name="CppbmLineMap"
+          Condition="'$(CppbmEnable)'=='true' and '$(CppbmLineMapEnable)'=='true'"
+          DependsOnTargets="CppbmCollectInputs;CppbmDecorate"
+          Inputs="@(CppbmInput->'%(CppbmGenOut)');$(CppbmLineMapScript);$(MSBuildProjectFullPath)"
+          Outputs="@(CppbmInput->'%(CppbmMapOut)')">
+    <Error Condition="!Exists('$(CppbmLineMapScript)')"
+           Text="[cpp-blackmagic] line_map.py not found: $(CppbmLineMapScript)" />
+
+    <Exec Command="&quot;$(CppbmPythonExe)&quot; $(CppbmPythonArgs) &quot;$(CppbmLineMapScript)&quot; --src &quot;%(CppbmInput.FullPath)&quot; --in &quot;%(CppbmInput.CppbmGenOut)&quot; --out &quot;%(CppbmInput.CppbmMapOut)&quot; --marker &quot;$(CppbmLineMapMarker)&quot; $(CppbmLineMapArgs)"
+          StandardOutputImportance="Low"
+          StandardErrorImportance="High" />
+  </Target>
+
   <Target Name="CppbmPreprocess"
           Condition="'$(CppbmEnable)'=='true'"
           BeforeTargets="ClCompile"
-          DependsOnTargets="CppbmDecorate" />
+          DependsOnTargets="CppbmDecorate;CppbmLineMap" />
 
   <!-- Must run even when preprocess target is up-to-date, so compile inputs are consistently swapped. -->
   <Target Name="CppbmSwapCompileInputs"
@@ -67,11 +87,14 @@
       <CppbmInput Include="@(ClCompile)">
         <CppbmSourceDir>$(ProjectDir)%(RelativeDir)</CppbmSourceDir>
         <CppbmGenOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.gen.cpp'))</CppbmGenOut>
+        <CppbmMapOut>$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.map.cpp'))</CppbmMapOut>
+        <CppbmCompileOut Condition="'$(CppbmLineMapEnable)'=='true'">$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.map.cpp'))</CppbmCompileOut>
+        <CppbmCompileOut Condition="'$(CppbmLineMapEnable)'!='true'">$([System.IO.Path]::GetFullPath('$(ProjectDir)$(IntDir)cppbm\%(RelativeDir)%(Filename)%(Extension).cppbm.gen.cpp'))</CppbmCompileOut>
         <CppbmInheritedIncludeDirs>%(ClCompile.AdditionalIncludeDirectories)</CppbmInheritedIncludeDirs>
       </CppbmInput>
-      <CppbmInput Remove="**\*.cppbm.gen.cpp;**\*.cppbm.decor.cpp" />
+      <CppbmInput Remove="**\*.cppbm.gen.cpp;**\*.cppbm.map.cpp;**\*.cppbm.decor.cpp" />
       <CppbmInput Remove="**\*.h;**\*.hh;**\*.hpp;**\*.hxx;**\*.ixx" />
-      <_CppbmGeneratedCompile Include="@(CppbmInput->'%(CppbmGenOut)')">
+      <_CppbmGeneratedCompile Include="@(CppbmInput->'%(CppbmCompileOut)')">
         <CppbmSourceDir>%(CppbmInput.CppbmSourceDir)</CppbmSourceDir>
         <CppbmInheritedIncludeDirs>%(CppbmInput.CppbmInheritedIncludeDirs)</CppbmInheritedIncludeDirs>
       </_CppbmGeneratedCompile>

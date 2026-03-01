@@ -10,6 +10,10 @@
     <CppbmDecoratorScript Condition="'$(CppbmDecoratorScript)'==''">$(CppbmScriptDir)decorator.py</CppbmDecoratorScript>
     <CppbmDecoratorArgs Condition="'$(CppbmDecoratorArgs)'==''"></CppbmDecoratorArgs>
     <CppbmModules Condition="'$(CppbmModules)'==''"></CppbmModules>
+    <CppbmLineMapEnable Condition="'$(CppbmLineMapEnable)'==''">true</CppbmLineMapEnable>
+    <CppbmLineMapScript Condition="'$(CppbmLineMapScript)'==''">$(MSBuildThisFileDirectory)line_map.py</CppbmLineMapScript>
+    <CppbmLineMapArgs Condition="'$(CppbmLineMapArgs)'==''"></CppbmLineMapArgs>
+    <CppbmLineMapMarker Condition="'$(CppbmLineMapMarker)'==''">// Generated decorator bindings.</CppbmLineMapMarker>
     <CppbmDisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'==''">true</CppbmDisableFastUpToDateCheck>
     <DisableFastUpToDateCheck Condition="'$(CppbmDisableFastUpToDateCheck)'=='true'">true</DisableFastUpToDateCheck>
   </PropertyGroup>
